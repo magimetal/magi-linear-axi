@@ -1,0 +1,219 @@
+---
+name: magi-linear-axi
+description: Use when an agent must read or change Linear issues, teams, users, projects, project updates, cycles, milestones, initiatives, labels, or documents; manage Linear authentication; run raw Linear GraphQL; inspect schema; or install AXI session hooks.
+---
+
+# magi-linear-axi
+
+Use `magi-linear-axi` for non-interactive Linear operations. Never invoke `linear` or `linear-cli`.
+
+## Operating contract
+
+```sh
+magi-linear-axi [--workspace <slug>] [--format toon|json] [--full] <family> <command> [args]
+```
+
+- Default stdout is compact TOON. Use `--format json` only when strict JSON parsing is needed.
+- Success data and structured errors go to stdout. Diagnostics go to stderr.
+- Exit `0` means success, `1` operational/API failure, `2` invalid usage.
+- Commands never prompt. Supply required IDs, names, text, files, and workspace explicitly.
+- `--full` disables normal long-string truncation.
+- Global options may appear before or after subcommands.
+- Prefer family commands below. Use `api` only when no family command covers operation.
+- Run `magi-linear-axi <family> <command> --help` before unfamiliar mutations.
+
+## Authentication and workspace
+
+Use environment key for ephemeral automation:
+
+```sh
+export LINEAR_API_KEY='lin_api_...'
+magi-linear-axi auth whoami
+```
+
+Store credentials in OS credential store for repeated use:
+
+```sh
+magi-linear-axi auth login --key "$LINEAR_API_KEY" --workspace acme
+magi-linear-axi auth list
+magi-linear-axi auth default acme
+magi-linear-axi --workspace acme auth whoami
+magi-linear-axi --workspace acme auth token
+magi-linear-axi auth logout acme
+```
+
+Credential precedence: project/global config, `LINEAR_API_KEY`, then stored workspace credential. Never print `auth token` unless caller explicitly requests secret value.
+
+Set project default team without replacing unrelated TOML keys:
+
+```sh
+magi-linear-axi config --team ENG
+magi-linear-axi config --path ./custom.linear.toml --team ENG
+```
+
+## Issues
+
+Issue argument accepts identifier such as `ENG-123`. When omitted, commands try identifier from current Git branch.
+
+```sh
+# Discover and inspect
+magi-linear-axi issue list --team ENG --limit 25
+magi-linear-axi issue query --search 'authentication' --state 'In Progress' --label bug
+magi-linear-axi issue mine --state 'In Progress'
+magi-linear-axi issue view ENG-123
+magi-linear-axi issue title ENG-123
+magi-linear-axi issue describe ENG-123
+magi-linear-axi issue url ENG-123
+magi-linear-axi issue id ENG-123
+
+# Create, update, and delete
+magi-linear-axi issue create --team <team-id> --title 'Fix authentication' --description 'Observed behavior and acceptance criteria' --priority 2
+magi-linear-axi issue update ENG-123 --title 'Revised title' --description 'Revised description' --priority 1
+magi-linear-axi issue update ENG-123 --unassign
+magi-linear-axi issue delete ENG-123
+
+# Comments
+magi-linear-axi issue comment list ENG-123
+magi-linear-axi issue comment add ENG-123 --body 'Investigation complete.'
+magi-linear-axi issue comment update <comment-id> --body 'Corrected update.'
+magi-linear-axi issue comment delete <comment-id>
+
+# Links, files, and relations
+magi-linear-axi issue link ENG-123 https://example.com/runbook --title 'Runbook'
+magi-linear-axi issue attach ENG-123 ./evidence.png --title 'Failure screenshot'
+magi-linear-axi issue relation list ENG-123
+magi-linear-axi issue relation add ENG-123 blocks ENG-456
+magi-linear-axi issue relation delete ENG-123 blocks <relation-id>
+
+# Local repository helpers
+magi-linear-axi issue commits ENG-123
+magi-linear-axi issue pull-request ENG-123
+magi-linear-axi --workspace acme issue view ENG-123 --web
+```
+
+For filters, `--assignee` and project/milestone values currently expect Linear IDs; team accepts key. Repeat `--state` and `--label` for multiple values.
+
+## Teams and users
+
+```sh
+magi-linear-axi team list
+magi-linear-axi team id <team-id>
+magi-linear-axi team members <team-id>
+magi-linear-axi team states <team-id>
+magi-linear-axi team autolinks <team-id>
+magi-linear-axi team create --name 'Platform'
+magi-linear-axi team delete <team-id>
+magi-linear-axi user list --limit 100 --all
+```
+
+Use Linear UUIDs for team mutations and nested queries unless command explicitly accepts team key.
+
+## Projects and project updates
+
+```sh
+magi-linear-axi project list --team <team-id> --limit 50
+magi-linear-axi project list --all
+magi-linear-axi project view <project-id>
+magi-linear-axi project create --name 'API Reliability' --team <team-id> --description 'Reliability work'
+magi-linear-axi project update <project-id> --name 'API Resilience' --status <status-id> --target-date 2026-06-30
+magi-linear-axi project delete <project-id>
+
+magi-linear-axi project-update list <project-id> --limit 20
+magi-linear-axi project-update create --project <project-id> --body 'Shipped retry controls.' --health onTrack
+```
+
+## Cycles and milestones
+
+```sh
+magi-linear-axi cycle list <team-id>
+magi-linear-axi cycle view <cycle-id>
+
+magi-linear-axi milestone list --project <project-id>
+magi-linear-axi milestone view <milestone-id>
+magi-linear-axi milestone create --project <project-id> --name 'Public beta' --description 'Beta exit criteria' --target-date 2026-06-30
+magi-linear-axi milestone update <milestone-id> --name 'Public launch' --target-date 2026-07-15
+magi-linear-axi milestone delete <milestone-id>
+```
+
+## Initiatives and initiative updates
+
+```sh
+magi-linear-axi initiative list
+magi-linear-axi initiative list --archived
+magi-linear-axi initiative view <initiative-id>
+magi-linear-axi initiative create --name 'Reliability' --description 'Reduce customer-impacting failures' --owner <user-id> --target-date 2026-12-31
+magi-linear-axi initiative update <initiative-id> --name 'Platform reliability' --health onTrack
+magi-linear-axi initiative archive <initiative-id>
+magi-linear-axi initiative unarchive <initiative-id>
+magi-linear-axi initiative delete <initiative-id>
+magi-linear-axi initiative add-project <initiative-id> --project <project-id>
+magi-linear-axi initiative remove-project <initiative-project-link-id>
+
+magi-linear-axi initiative-update list <initiative-id> --limit 20
+magi-linear-axi initiative-update create --issue <initiative-id> --body 'Program remains on track.' --health onTrack
+```
+
+## Labels
+
+```sh
+magi-linear-axi label list --team <team-id>
+magi-linear-axi label create --team <team-id> --name 'customer-impact' --description 'Customer-visible issue'
+magi-linear-axi label delete <label-id>
+```
+
+## Documents
+
+Document content can come from `--content`, `--body-file`/`--content-file`, or stdin.
+
+```sh
+magi-linear-axi document list --project <project-id> --limit 50
+magi-linear-axi document view <document-id>
+magi-linear-axi document create --title 'Launch plan' --project <project-id> --content '# Launch plan'
+magi-linear-axi document create --title 'Runbook' --project <project-id> --content-file ./runbook.md
+cat notes.md | magi-linear-axi document create --title 'Notes' --project <project-id> --stdin
+magi-linear-axi document update <document-id> --title 'Updated launch plan' --content-file ./launch.md
+magi-linear-axi document delete <document-id>
+```
+
+## Raw GraphQL and schema
+
+Pass query as argument or stdin. `--variable key=value` parses JSON values when valid; otherwise value is string.
+
+```sh
+magi-linear-axi api '{ viewer { id name email } }'
+magi-linear-axi api 'query($first:Int!){ issues(first:$first){ nodes { identifier title } } }' --variable first=20
+magi-linear-axi api 'query($filter:IssueFilter){ issues(filter:$filter){ nodes { identifier title } } }' --variables-json '{"filter":{"team":{"key":{"eq":"ENG"}}}}'
+cat query.graphql | magi-linear-axi api --paginate --format json
+magi-linear-axi api 'mutation($id:String!){ issueDelete(id:$id){ success } }' --variable id=ENG-123 --silent
+magi-linear-axi schema --output linear-schema.json
+```
+
+`--paginate` follows connection `pageInfo.endCursor`; use only for queries returning a paginated connection.
+
+## Setup, completions, and discovery
+
+```sh
+# Install all Claude Code, Codex, and OpenCode session integrations
+magi-linear-axi setup
+
+# Install selected integrations
+magi-linear-axi setup --claude --codex
+
+# Shell completion
+magi-linear-axi completions zsh > ~/.zfunc/_magi-linear-axi
+
+# Discover exact current surface
+magi-linear-axi --help
+magi-linear-axi issue --help
+magi-linear-axi issue create --help
+magi-linear-axi project update --help
+```
+
+## Agent execution rules
+
+1. Read before mutating: list/view target and retain returned IDs.
+2. Use explicit IDs for mutations; do not guess names resolve to IDs.
+3. Prefer one mutation per invocation and inspect `success` in output.
+4. On exit `2`, fix syntax from `--help`; do not retry unchanged.
+5. On exit `1`, inspect structured `error.type` and `error.message`; do not expose credentials.
+6. Use `--format json` only when downstream tooling requires JSON. Otherwise retain TOON for token efficiency.
