@@ -36,8 +36,11 @@ pub fn run(cli: &Cli, kind: Kind, op: &str, a: crate::cli::ResourceArgs) -> Resu
     let (query, variables) = document(kind, op, id.as_deref(), vars)?;
     let value = if a.all && op == "list" {
         client.paginate(query, variables)?
-    } else {
+    } else if op == "list" || op == "view" || op == "members" || op == "states" || op == "autolinks"
+    {
         client.query(query, variables)?
+    } else {
+        client.mutation(query, variables)?
     };
     out.render(&value)
 }

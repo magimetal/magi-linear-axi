@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve bounded sanitized HTTP failure details and status codes.
+- Retry only read requests on transient transport failures/statuses; mutations and uploads execute once.
+- Treat missing issues and unsuccessful issue deletion as structured API errors.
 
 ## [0.1.0] - 2026-08-03
 

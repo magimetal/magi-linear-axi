@@ -42,7 +42,12 @@ fn run(cli: &Cli, query: &str, vars: Value) -> Result<(), AppError> {
 fn one(cli: &Cli, id: &str, field: &str) -> Result<(), AppError> {
     let q =
         format!("query Issue($id:String!) {{ issue(id:$id) {{ identifier title url {field} }} }}");
-    run(cli, &q, json!({"id":id}))
+    let (c, o) = ctx(cli)?;
+    let value = c.query(&q, json!({"id":id}))?;
+    if value.get("issue").is_none_or(Value::is_null) {
+        return Err(AppError::api(format!("issue {id} not found")));
+    }
+    o.render(&value)
 }
 pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
     match command {
@@ -101,11 +106,7 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
             let _ = id;
             Output::new(cli.format.clone(), cli.full).render(&json!({"commits":commits}))
         }
-        IssueCommand::Delete(a) => mutate(
-            cli,
-            "mutation IssueDelete($id:String!){issueDelete(id:$id){success}}",
-            json!({"id":issue_id(a.issue.as_deref())?}),
-        ),
+        IssueCommand::Delete(a) => delete_issue(cli, &issue_id(a.issue.as_deref())?),
         IssueCommand::Create(a) => create(cli, a),
         IssueCommand::Update(a) => update(cli, a),
         IssueCommand::Comment { command } => comment(cli, command),
@@ -163,7 +164,24 @@ fn query(cli: &Cli, a: QueryArgs, mine: bool) -> Result<(), AppError> {
     )
 }
 fn mutate(cli: &Cli, q: &str, v: Value) -> Result<(), AppError> {
-    run(cli, q, v)
+    let (c, o) = ctx(cli)?;
+    o.render(&c.mutation(q, v)?)
+}
+fn delete_issue(cli: &Cli, id: &str) -> Result<(), AppError> {
+    let (c, o) = ctx(cli)?;
+    let value = c.mutation(
+        "mutation IssueDelete($id:String!){issueDelete(id:$id){success}}",
+        json!({"id":id}),
+    )?;
+    if value
+        .get("issueDelete")
+        .and_then(|v| v.get("success"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(AppError::api("issue delete was not successful"));
+    }
+    o.render(&value)
 }
 fn create(cli: &Cli, a: IssueCreateArgs) -> Result<(), AppError> {
     let title = a.title.ok_or_else(|| AppError::usage("--title required"))?;

@@ -27,6 +27,9 @@ cargo install --path .
 - API key source: non-empty `LINEAR_API_KEY` only. Keys are never stored or printed.
 - Requires Rust 1.87 or newer.
 
+- Read-only requests retry transient connection failures and HTTP 500/502/503/504 at most twice (50ms, then 100ms). Transient transport failures without HTTP status also retry for reads; mutations, uploads, raw API calls (including `--paginate`), and HTTP-200 GraphQL errors never retry.
+- HTTP failures preserve status and a sanitized first 512-byte preview; oversized previews end with `[truncated]`. Delete `success:true` means provider accepted request. Never retry delete after success or ambiguous transport failure. Prefer a narrowly scoped list/query exclusion check using retained team and title, but treat it as eventual-consistency evidence rather than transactional proof; absence from an unfiltered first page is not definitive. Direct reads may be stale, null, or HTTP error. Provider-controlled tombstone behavior cannot be guaranteed locally.
+
 ## Commands
 
 ```sh

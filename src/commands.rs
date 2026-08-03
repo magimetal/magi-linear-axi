@@ -58,9 +58,9 @@ pub fn api(cli: &Cli, a: ApiArgs) -> Result<(), AppError> {
     }
     let (c, o) = ctx(cli)?;
     let v = if a.paginate {
-        c.paginate(&q, Value::Object(vars))?
+        c.raw_paginate(&q, Value::Object(vars))?
     } else {
-        c.query(&q, Value::Object(vars))?
+        c.raw(&q, Value::Object(vars))?
     };
     if !a.silent { o.render(&v) } else { Ok(()) }
 }
@@ -75,16 +75,10 @@ pub fn schema(cli: &Cli, path: Option<PathBuf>) -> Result<(), AppError> {
 }
 pub fn auth(cli: &Cli, cmd: AuthCommand) -> Result<(), AppError> {
     match cmd {
-        AuthCommand::Whoami => api(
-            cli,
-            ApiArgs {
-                query: Some("{ viewer { id name email } }".into()),
-                variable: vec![],
-                variables_json: None,
-                paginate: false,
-                silent: false,
-            },
-        ),
+        AuthCommand::Whoami => {
+            let (client, output) = ctx(cli)?;
+            output.render(&client.query("query Viewer { viewer { id name email } }", json!({}))?)
+        }
     }
 }
 pub fn home(cli: &Cli) -> Result<(), AppError> {
