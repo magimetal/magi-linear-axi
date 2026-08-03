@@ -56,6 +56,8 @@ magi-linear-axi issue update ENG-123 --title 'Revised title' --description 'Revi
 magi-linear-axi issue update ENG-123 --unassign
 magi-linear-axi issue delete ENG-123
 
+Delete safety: inspect target first and retain identifier, team, and exact title; run one delete mutation; then use a narrowly scoped `issue query --team <KEY> --search '<retained title>'` exclusion check. `success:true` means provider accepted request. Never retry delete after success or ambiguous transport failure. Query exclusion is eventual-consistency evidence, not transactional proof; absence from an unfiltered first page is not definitive. Direct reads may be stale, null, or HTTP error, and provider-controlled tombstone behavior cannot be guaranteed by local tests. Read retries: statuses 500/502/503/504 and no-status transient transport failures, at most 3 attempts with 50ms then 100ms backoff. Mutations, uploads, raw API calls (including `--paginate`), and HTTP-200 GraphQL errors do not retry. HTTP error detail is sanitized and previewed to first 512 bytes with `[truncated]` marker.
+
 # Comments
 magi-linear-axi issue comment list ENG-123
 magi-linear-axi issue comment add ENG-123 --body 'Investigation complete.'

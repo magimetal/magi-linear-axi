@@ -1,11 +1,36 @@
 use assert_cmd::Command;
 use serde_json::Value;
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
+
+#[derive(Clone)]
+struct Response {
+    status: u16,
+    content_type: &'static str,
+    body: String,
+}
+
+impl Response {
+    fn json(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            content_type: "application/json",
+            body: body.into(),
+        }
+    }
+    fn text(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            content_type: "text/plain",
+            body: body.into(),
+        }
+    }
+}
 
 struct Mock {
     endpoint: String,
@@ -15,19 +40,43 @@ struct Mock {
 
 impl Mock {
     fn start(responses: Vec<String>) -> Self {
+        Self::scripted(
+            responses
+                .into_iter()
+                .map(|body| Response::json(200, &body))
+                .collect(),
+        )
+    }
+
+    fn scripted(responses: Vec<Response>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}/graphql", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&requests);
         let thread = thread::spawn(move || {
             for response in responses {
-                let (mut stream, _) = listener.accept().unwrap();
+                let Some(mut stream) = accept_before_timeout(&listener) else {
+                    return;
+                };
+                stream.set_nonblocking(false).unwrap();
                 let request = read_request(&mut stream);
                 seen.lock().unwrap().push(request);
+                let reason = match response.status {
+                    200 => "OK",
+                    500 => "Internal Server Error",
+                    502 => "Bad Gateway",
+                    503 => "Service Unavailable",
+                    504 => "Gateway Timeout",
+                    _ => "Error",
+                };
                 let body = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response.len(),
-                    response
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.status,
+                    reason,
+                    response.content_type,
+                    response.body.len(),
+                    response.body
                 );
                 stream.write_all(body.as_bytes()).unwrap();
             }
@@ -41,6 +90,27 @@ impl Mock {
 
     fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn finish(self) -> Vec<String> {
+        self.thread.join().unwrap();
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+fn accept_before_timeout(listener: &TcpListener) -> Option<TcpStream> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("mock accept failed: {error}"),
+        }
     }
 }
 
@@ -274,4 +344,258 @@ fn home_needs_no_auth_and_reports_collapsed_binary_path() {
             .unwrap()
             .contains("Linear GraphQL")
     );
+}
+
+fn run_json(mock: &Mock, args: &[&str]) -> std::process::Output {
+    run_json_with_token(mock, args, "lin_api_test")
+}
+
+fn run_json_with_token(mock: &Mock, args: &[&str], token: &str) -> std::process::Output {
+    Command::cargo_bin("magi-linear-axi")
+        .unwrap()
+        .args(["--format", "json", "--endpoint", &mock.endpoint])
+        .args(args)
+        .env("LINEAR_API_KEY", token)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn read_only_family_retries_500_and_returns_data() {
+    let mock = Mock::scripted(vec![
+        Response::json(500, "temporary"),
+        Response::json(
+            200,
+            r#"{"data":{"teams":{"nodes":[{"id":"t1"}],"pageInfo":{"hasNextPage":false}}}}"#,
+        ),
+    ]);
+    let output = run_json(&mock, &["team", "list"]);
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["teams"]["nodes"][0]["id"],
+        "t1"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retrying Linear request"));
+    assert_eq!(mock.requests().len(), 2);
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn exhausted_read_retries_exactly_three_times() {
+    let mock = Mock::scripted(vec![Response::json(503, "down"); 3]);
+    let output = run_json(&mock, &["team", "list"]);
+    assert_eq!(output.status.code(), Some(1));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], 1);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("HTTP 503")
+    );
+    assert_eq!(mock.requests().len(), 3);
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn mutations_and_uploads_never_retry() {
+    let mock = Mock::scripted(vec![Response::json(503, "mutation down")]);
+    let output = run_json(&mock, &["issue", "delete", "ENG-1"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(mock.requests().len(), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("retrying Linear request"));
+    mock.thread.join().unwrap();
+
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let mock = Mock::scripted(vec![Response::json(503, "upload init down")]);
+    let output = run_json(
+        &mock,
+        &["issue", "attach", "ENG-1", file.path().to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(mock.requests().len(), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("retrying Linear request"));
+    mock.thread.join().unwrap();
+
+    let upload_mock = Mock::scripted(vec![
+        Response::text(503, "upload down"),
+        Response::text(503, "unexpected retry"),
+    ]);
+    let initialization = format!(
+        r#"{{"data":{{"fileUpload":{{"success":true,"uploadFile":{{"assetUrl":"https://assets.example/file","uploadUrl":"{}","headers":[]}}}}}}}}"#,
+        upload_mock.endpoint
+    );
+    let graphql_mock = Mock::scripted(vec![Response::json(200, &initialization)]);
+    let output = run_json(
+        &graphql_mock,
+        &["issue", "attach", "ENG-1", file.path().to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("HTTP 503"));
+    assert_eq!(graphql_mock.requests().len(), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("retrying Linear request"));
+    graphql_mock.thread.join().unwrap();
+    assert_eq!(upload_mock.finish().len(), 1);
+}
+
+#[test]
+fn paginated_read_retries_only_failed_cursor_page() {
+    let mock = Mock::scripted(vec![
+        Response::json(
+            200,
+            r#"{"data":{"teams":{"nodes":[{"id":"1"}],"pageInfo":{"hasNextPage":true,"endCursor":"c1"}}}}"#,
+        ),
+        Response::json(502, "bad gateway"),
+        Response::json(
+            200,
+            r#"{"data":{"teams":{"nodes":[{"id":"2"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}"#,
+        ),
+    ]);
+    let output = run_json(&mock, &["team", "list", "--all"]);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["teams"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["id"] == "1")
+            .count(),
+        1
+    );
+    assert_eq!(value["teams"]["nodes"].as_array().unwrap().len(), 2);
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].contains("\"after\":\"c1\"") || requests[1].contains("\"after\": \"c1\""));
+    assert_eq!(requests[1].matches("\"after\"").count(), 1);
+    assert_eq!(requests[2].matches("\"after\"").count(), 1);
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn raw_http_errors_preserve_json_and_text_with_bounded_redaction() {
+    let mock = Mock::scripted(vec![Response::json(
+        500,
+        r#"{"errors":[{"message":"resolver unavailable"}]}"#,
+    )]);
+    let output = run_json(&mock, &["api", "query { viewer { id } }"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("resolver unavailable"));
+    assert_eq!(mock.requests().len(), 1);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("retrying Linear request"));
+    mock.thread.join().unwrap();
+
+    let token = "lin_api_secret";
+    let body = format!(r#"{{"error":"{token}","detail":"{}"}}"#, "x".repeat(1000));
+    let mock = Mock::scripted(vec![Response::json(500, &body)]);
+    let output = run_json(&mock, &["api", "query { viewer { id } }"]);
+    assert_eq!(output.status.code(), Some(1));
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!combined.contains(token));
+    assert!(combined.contains("truncated"));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value["error"]["message"].as_str().unwrap().len() < 600);
+    assert_eq!(mock.requests().len(), 1);
+    mock.thread.join().unwrap();
+
+    let mock = Mock::scripted(vec![Response::text(500, "plain upstream failure")]);
+    let output = run_json(&mock, &["api", "query { viewer { id } }"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("plain upstream failure"));
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn graphql_errors_and_failed_delete_are_not_retried() {
+    let token = "opaque-secret";
+    let mock = Mock::scripted(vec![Response::json(
+        200,
+        r#"{"errors":[{"message":"bad query opaque-secret"}]}"#,
+    )]);
+    let output = run_json_with_token(&mock, &["team", "list"], token);
+    assert_eq!(output.status.code(), Some(1));
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("bad query"));
+    assert!(!combined.contains(token));
+    assert_eq!(mock.requests().len(), 1);
+    mock.thread.join().unwrap();
+
+    let mock = Mock::scripted(vec![Response::json(
+        200,
+        r#"{"data":{"issueDelete":{"success":false}}}"#,
+    )]);
+    let output = run_json(&mock, &["issue", "delete", "ENG-1"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("not successful"));
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn successful_delete_then_scoped_query_excludes_issue() {
+    let mock = Mock::scripted(vec![
+        Response::json(200, r#"{"data":{"issueDelete":{"success":true}}}"#),
+        Response::json(
+            200,
+            r#"{"data":{"issues":{"nodes":[{"identifier":"ENG-2"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}"#,
+        ),
+    ]);
+    let deleted = run_json(&mock, &["issue", "delete", "ENG-1"]);
+    assert!(deleted.status.success());
+
+    let listed = run_json(
+        &mock,
+        &[
+            "issue",
+            "query",
+            "--team",
+            "ENG",
+            "--search",
+            "Retained title",
+            "--limit",
+            "50",
+        ],
+    );
+    assert!(listed.status.success());
+    let value: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert!(
+        value["issues"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|issue| issue["identifier"] != "ENG-1")
+    );
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("IssueDelete"));
+    assert!(requests[0].contains("ENG-1"));
+    assert!(requests[1].contains("query Issues"));
+    assert!(requests[1].contains("Retained title"));
+    assert!(requests[1].contains("ENG"));
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn issue_null_reads_are_consistent_structured_api_errors() {
+    for command in ["title", "url", "describe", "view"] {
+        let mock = Mock::scripted(vec![Response::json(200, r#"{"data":{"issue":null}}"#)]);
+        let output = run_json(&mock, &["issue", command, "ENG-1"]);
+        assert_eq!(output.status.code(), Some(1), "{command}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["type"], "api");
+        assert_eq!(value["error"]["code"], 1);
+        assert_eq!(value["error"]["message"], "issue ENG-1 not found");
+        mock.thread.join().unwrap();
+    }
 }
