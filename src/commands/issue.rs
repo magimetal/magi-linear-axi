@@ -1,20 +1,11 @@
-use crate::{cli::*, config, credentials::CredentialStore, error::AppError, output::Output};
+use crate::{cli::*, config, error::AppError, output::Output};
 use serde_json::{Value, json};
 use std::process::Command as ProcessCommand;
 
 fn ctx(cli: &Cli) -> Result<(crate::client::LinearClient, Output), AppError> {
     let c = config::Config::load(cli.endpoint.clone(), cli.workspace.clone())?;
-    let t = c
-        .api_key
-        .clone()
-        .or_else(|| {
-            CredentialStore::load()
-                .ok()
-                .and_then(|s| s.token(c.workspace.as_deref()).ok())
-        })
-        .ok_or_else(|| AppError::auth("no API key configured"))?;
     Ok((
-        crate::client::LinearClient::new(c.endpoint, t)?,
+        crate::client::LinearClient::new(c.endpoint, config::api_key()?)?,
         Output::new(cli.format.clone(), cli.full),
     ))
 }

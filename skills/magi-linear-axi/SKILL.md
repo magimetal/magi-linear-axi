@@ -1,6 +1,6 @@
 ---
 name: magi-linear-axi
-description: Use when an agent must read or change Linear issues, teams, users, projects, project updates, cycles, milestones, initiatives, labels, or documents; manage Linear authentication; run raw Linear GraphQL; inspect schema; or install AXI session hooks.
+description: Use when an agent must read or change Linear issues, teams, users, projects, project updates, cycles, milestones, initiatives, labels, or documents; verify Linear authentication; run raw Linear GraphQL; inspect schema; or install AXI context integrations.
 ---
 
 # magi-linear-axi
@@ -24,32 +24,16 @@ magi-linear-axi [--workspace <slug>] [--format toon|json] [--full] <family> <com
 
 ## Authentication and workspace
 
-Use environment key for ephemeral automation:
+Set `LINEAR_API_KEY` in environment. Key must be non-empty for network commands. Never store or print it.
 
 ```sh
 export LINEAR_API_KEY='lin_api_...'
 magi-linear-axi auth whoami
-```
-
-Store credentials in OS credential store for repeated use:
-
-```sh
-magi-linear-axi auth login --key "$LINEAR_API_KEY" --workspace acme
-magi-linear-axi auth list
-magi-linear-axi auth default acme
 magi-linear-axi --workspace acme auth whoami
-magi-linear-axi --workspace acme auth token
-magi-linear-axi auth logout acme
 ```
 
-Credential precedence: project/global config, `LINEAR_API_KEY`, then stored workspace credential. Never print `auth token` unless caller explicitly requests secret value.
+Workspace precedence: `--workspace` > non-empty `LINEAR_WORKSPACE`; workspace required only for browser-opening commands.
 
-Set project default team without replacing unrelated TOML keys:
-
-```sh
-magi-linear-axi config --team ENG
-magi-linear-axi config --path ./custom.linear.toml --team ENG
-```
 
 ## Issues
 
@@ -193,7 +177,7 @@ magi-linear-axi schema --output linear-schema.json
 ## Setup, completions, and discovery
 
 ```sh
-# Install all Claude Code, Codex, and OpenCode session integrations
+# Install all Claude Code, Codex, and OpenCode context integrations
 magi-linear-axi setup
 
 # Install selected integrations

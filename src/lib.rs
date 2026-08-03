@@ -2,7 +2,6 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod config;
-pub mod credentials;
 pub mod error;
 pub mod output;
 
@@ -19,19 +18,7 @@ pub struct CommandContext {
 impl CommandContext {
     pub fn from_cli(cli: &Cli) -> Result<Self, AppError> {
         let config = config::Config::load(cli.endpoint.clone(), cli.workspace.clone())?;
-        let token = config
-            .api_key
-            .clone()
-            .or_else(|| {
-                credentials::CredentialStore::load()
-                    .ok()
-                    .and_then(|s| s.token(config.workspace.as_deref()).ok())
-            })
-            .ok_or_else(|| {
-                AppError::auth(
-                    "no API key; set LINEAR_API_KEY, configure api_key, or run auth login",
-                )
-            })?;
+        let token = config::api_key()?;
         Ok(Self {
             client: client::LinearClient::new(config.endpoint.clone(), token)?,
             config,

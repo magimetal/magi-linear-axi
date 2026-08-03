@@ -123,7 +123,7 @@ fn api_error_is_json_stdout_and_exit_two_for_usage() {
 }
 
 #[test]
-fn setup_is_idempotent_preserves_config_and_installs_session_plugins() {
+fn setup_is_idempotent_preserves_config_and_installs_context_integrations() {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join(".codex/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
@@ -141,17 +141,107 @@ fn setup_is_idempotent_preserves_config_and_installs_session_plugins() {
         &std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
-    assert!(claude["hooks"]["SessionStart"].is_array());
+    let executable = assert_cmd::cargo::cargo_bin!("magi-linear-axi")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        claude["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        executable
+    );
+    let codex_hooks: Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".codex/hooks.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        codex_hooks["hooks"]["SessionStart"][0]["command"],
+        executable
+    );
     let codex = std::fs::read_to_string(&config).unwrap();
     assert!(codex.contains("hooks = true") && codex.contains("other = true"));
-    assert!(
-        std::fs::read_to_string(
-            home.path()
-                .join(".config/opencode/plugins/magi-linear-axi.js")
-        )
+    let plugin = std::fs::read_to_string(
+        home.path()
+            .join(".config/opencode/plugins/magi-linear-axi.js"),
+    )
+    .unwrap();
+    assert!(plugin.contains("export const LinearAxiPlugin"));
+    assert!(plugin.contains("experimental.chat.system.transform"));
+    assert!(plugin.contains("output.system.push(context)"));
+    assert!(plugin.contains(&format!("${{{executable:?}}}")));
+    assert!(!plugin.contains("session.created"));
+}
+
+#[test]
+fn setup_merges_existing_hooks_and_repairs_stale_managed_paths() {
+    let home = tempfile::tempdir().unwrap();
+    let claude_path = home.path().join(".claude/settings.json");
+    let codex_path = home.path().join(".codex/hooks.json");
+    std::fs::create_dir_all(claude_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &claude_path,
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"existing"}]},{"hooks":[{"type":"command","command":"/old/magi-linear-axi"}]}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &codex_path,
+        r#"{"hooks":{"SessionStart":[{"command":"existing"},{"command":"/old/magi-linear-axi"}]}}"#,
+    )
+    .unwrap();
+
+    Command::cargo_bin("magi-linear-axi")
         .unwrap()
-        .contains("session.created")
+        .args(["setup", "--claude", "--codex"])
+        .env("HOME", home.path())
+        .assert()
+        .success();
+
+    let executable = assert_cmd::cargo::cargo_bin!("magi-linear-axi")
+        .to_string_lossy()
+        .into_owned();
+    let claude: Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_path).unwrap()).unwrap();
+    let claude_commands: Vec<_> = claude["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .filter_map(|hook| hook["command"].as_str())
+        .collect();
+    assert!(claude_commands.contains(&"existing"));
+    assert_eq!(
+        claude_commands.iter().filter(|&&c| c == executable).count(),
+        1
     );
+
+    let codex: Value = serde_json::from_str(&std::fs::read_to_string(codex_path).unwrap()).unwrap();
+    let codex_commands: Vec<_> = codex["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|hook| hook["command"].as_str())
+        .collect();
+    assert!(codex_commands.contains(&"existing"));
+    assert_eq!(
+        codex_commands.iter().filter(|&&c| c == executable).count(),
+        1
+    );
+}
+
+#[test]
+fn setup_preserves_malformed_toml() {
+    let home = tempfile::tempdir().unwrap();
+    let malformed = "endpoint = [";
+    let codex = home.path().join(".codex/config.toml");
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::fs::write(&codex, malformed).unwrap();
+    Command::cargo_bin("magi-linear-axi")
+        .unwrap()
+        .args(["setup", "--codex"])
+        .env("HOME", home.path())
+        .assert()
+        .failure();
+    assert_eq!(std::fs::read_to_string(codex).unwrap(), malformed);
+    assert!(!home.path().join(".codex/hooks.json").exists());
 }
 
 #[test]
@@ -167,11 +257,9 @@ fn clap_definition_and_root_aliases_are_valid() {
 
 #[test]
 fn home_needs_no_auth_and_reports_collapsed_binary_path() {
-    let binary_path = std::env::var("CARGO_BIN_EXE_magi-linear-axi").unwrap();
-    let binary = std::path::Path::new(&binary_path);
+    let binary = assert_cmd::cargo::cargo_bin!("magi-linear-axi");
     let home = binary.parent().unwrap();
-    let output = Command::cargo_bin("magi-linear-axi")
-        .unwrap()
+    let output = Command::new(binary)
         .args(["--format", "json"])
         .env("HOME", home)
         .env_remove("LINEAR_API_KEY")

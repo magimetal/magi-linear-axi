@@ -6,10 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+
+## [0.1.0] - 2026-08-03
+
 ### Added
 
-- Add `AGENTS_CUSTOM.md` for repository-specific manual agent overrides.
-
-### Changed
-
-- Expand generated `AGENTS.md` with project architecture, code map, conventions, command contracts, anti-patterns, and verification commands.
+- Initial public release of non-interactive `magi-linear-axi` CLI for direct Linear GraphQL operations.
+- Issue and resource-family commands for teams, users, projects, updates, cycles, milestones, initiatives, labels, and documents.
+- Authentication uses non-empty `LINEAR_API_KEY` only; workspace uses `--workspace` or `LINEAR_WORKSPACE`; credentials are never stored.
+- Compact TOON output by default, strict JSON output on request, structured errors, pagination, raw GraphQL, schema inspection, uploads, and setup integrations.

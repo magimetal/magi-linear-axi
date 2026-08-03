@@ -39,12 +39,6 @@ pub enum Command {
     },
     Setup(SetupArgs),
     Auth(AuthArgs),
-    Config {
-        #[arg(long)]
-        path: Option<PathBuf>,
-        #[arg(long)]
-        team: Option<String>,
-    },
     Issue {
         #[command(subcommand)]
         command: Option<IssueCommand>,
@@ -113,22 +107,9 @@ pub struct AuthArgs {
     #[command(subcommand)]
     pub command: AuthCommand,
 }
+
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    Login {
-        #[arg(short, long, env = "LINEAR_API_KEY")]
-        key: Option<String>,
-        #[arg(long, default_value = "default")]
-        workspace: String,
-    },
-    Logout {
-        workspace: Option<String>,
-    },
-    List,
-    Default {
-        workspace: String,
-    },
-    Token,
     Whoami,
 }
 #[derive(Debug, Subcommand)]
@@ -466,7 +447,6 @@ impl Cli {
             }
             Some(Command::Setup(a)) => commands::setup(a),
             Some(Command::Auth(a)) => commands::auth(&self, a.command),
-            Some(Command::Config { path, team }) => commands::config(path, team),
             Some(Command::Issue { command }) => commands::issues(&self, command),
             Some(Command::Team { command }) => commands::team::execute(&self, command),
             Some(Command::User { command }) => commands::user::execute(&self, command),

@@ -1,5 +1,4 @@
-use crate::{cli::Cli, error::AppError, output::Output};
-use crate::{config, credentials::CredentialStore};
+use crate::{cli::Cli, config, error::AppError, output::Output};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -22,16 +21,7 @@ pub enum Kind {
 
 pub fn run(cli: &Cli, kind: Kind, op: &str, a: crate::cli::ResourceArgs) -> Result<(), AppError> {
     let cfg = config::Config::load(cli.endpoint.clone(), cli.workspace.clone())?;
-    let token = cfg
-        .api_key
-        .clone()
-        .or_else(|| {
-            CredentialStore::load()
-                .ok()
-                .and_then(|s| s.token(cfg.workspace.as_deref()).ok())
-        })
-        .ok_or_else(|| AppError::auth("no API key configured"))?;
-    let client = crate::client::LinearClient::new(cfg.endpoint, token)?;
+    let client = crate::client::LinearClient::new(cfg.endpoint, config::api_key()?)?;
     let out = Output::new(cli.format.clone(), cli.full);
     let id = a.args.first().cloned();
     if matches!((kind, op), (Kind::Team, "id")) {
