@@ -1,0 +1,26 @@
+{
+  "name": "@magi-linear-axi/linear-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Non-destructive read-only benchmark harness for magi-linear-axi and Linear MCP",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "snapshot": "tsx src/cli.ts snapshot",
+    "list": "tsx src/cli.ts list",
+    "run": "tsx src/cli.ts run",
+    "matrix": "tsx src/cli.ts matrix",
+    "preflight": "tsx src/cli.ts preflight",
+    "report": "tsx src/cli.ts report"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
+  }
+}

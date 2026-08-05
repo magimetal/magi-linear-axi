@@ -1,0 +1,7 @@
+# Never package live workspace facts, raw trajectories, or generated artifacts.
+node_modules/
+dist/
+results/
+snapshots/
+generated/
+*.tgz

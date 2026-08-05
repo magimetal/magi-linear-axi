@@ -1,5 +1,9 @@
 use crate::error::AppError;
 use serde_json::Value;
+
+/// Maximum Unicode code points rendered for a string in default output.
+pub const AXI_OUTPUT_MAX_UNICODE_CODE_POINTS: usize = 240;
+
 pub struct Output {
     format: String,
     full: bool,
@@ -27,8 +31,8 @@ impl Output {
 
 fn truncate_value(v: &Value) -> Value {
     match v {
-        Value::String(s) if s.chars().count() > 240 => {
-            let prefix: String = s.chars().take(240).collect();
+        Value::String(s) if s.chars().count() > AXI_OUTPUT_MAX_UNICODE_CODE_POINTS => {
+            let prefix: String = s.chars().take(AXI_OUTPUT_MAX_UNICODE_CODE_POINTS).collect();
             Value::String(format!(
                 "{prefix}… [truncated, {} chars]",
                 s.chars().count()
@@ -46,13 +50,33 @@ fn truncate_value(v: &Value) -> Value {
 }
 #[cfg(test)]
 mod tests {
+    use super::{AXI_OUTPUT_MAX_UNICODE_CODE_POINTS, truncate_value};
+
     #[test]
     fn valid_toon() {
-        let s = toon_format::encode(
+        let encoded = toon_format::encode(
             &serde_json::json!({"x":1}),
             &toon_format::EncodeOptions::default(),
-        )
-        .unwrap();
-        assert!(s.contains("x"));
+        );
+        assert!(encoded.is_ok());
+        assert!(encoded.unwrap_or_default().contains("x"));
+    }
+
+    #[test]
+    fn default_output_limit_counts_unicode_code_points() {
+        let exact = "🙂".repeat(AXI_OUTPUT_MAX_UNICODE_CODE_POINTS);
+        let exact_value = truncate_value(&serde_json::json!(exact));
+        assert_eq!(exact_value, serde_json::json!(exact));
+
+        let oversized = "🙂".repeat(AXI_OUTPUT_MAX_UNICODE_CODE_POINTS + 1);
+        let oversized_value = truncate_value(&serde_json::json!(oversized));
+        assert_eq!(
+            oversized_value,
+            serde_json::json!(format!(
+                "{}… [truncated, {} chars]",
+                "🙂".repeat(AXI_OUTPUT_MAX_UNICODE_CODE_POINTS),
+                AXI_OUTPUT_MAX_UNICODE_CODE_POINTS + 1,
+            ))
+        );
     }
 }

@@ -12,15 +12,15 @@ documentation = "https://docs.rs/magi-linear-axi"
 keywords = ["linear", "graphql", "cli", "agents", "toon"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
-    "src/**",
-    "tests/**",
-    "skills/**",
-    "docs/release.md",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
-    "README.md",
-    "CHANGELOG.md",
-    "Cargo.lock",
+  "/src/**",
+  "/tests/**",
+  "/skills/**",
+  "/docs/release.md",
+  "/LICENSE",
+  "/THIRD_PARTY_NOTICES.md",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/Cargo.lock",
 ]
 [[bin]]
 name = "magi-linear-axi"
