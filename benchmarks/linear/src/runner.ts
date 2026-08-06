@@ -109,19 +109,10 @@ export function buildTaskPrompt(
 ): string {
   const safety = condition === "axi"
     ? [
-        `Use Bash only. Every Bash call must contain exactly one invocation of this exact per-case AXI credential-broker wrapper: ${axiBin}.`,
-        "Use one of these bounded read-only command forms, replacing the angle-bracket placeholders with task data:",
-        "For issue commands, use the public human issue identifier supplied by the task (for example ENG-10), never an internal issue UUID.",
-        `  ${axiBin} issue view <IDENTIFIER>`,
-        `  ${axiBin} issue query --search=<TEXT>`,
-        `  ${axiBin} issue comment list <IDENTIFIER>`,
-        `  ${axiBin} issue relation list <IDENTIFIER>`,
-        `  ${axiBin} project view <PROJECT_ID>`,
-        `  ${axiBin} --help`,
-        "Use the unambiguous --search=<TEXT> form so the complete title remains one argv value, including when it begins with '-'.",
-        "Do not use a second command in the same Bash call or attempt to bypass the wrapper.",
-        "Forbid redirection (including 2>&1), pipelines, chaining or separators, substitutions, and line continuations.",
-        "Forbid every write, setup, config, auth, endpoint override, raw GraphQL mutation, create, update, delete, archive, link, attach, comment write, or relation write operation.",
+        `Use Bash only; each call runs exactly one ${axiBin} invocation (credential broker).`,
+        "Allowed reads (replace placeholders): issue view <IDENTIFIER> | issue query --search=<TEXT> | issue comment list <IDENTIFIER> | issue relation list <IDENTIFIER> | project view <PROJECT_ID>.",
+        "Use public issue identifiers (for example ENG-10), never internal UUIDs; use --search=<TEXT> so complete title stays one argv value, including titles beginning '-'.",
+        "No second command, wrapper bypass, shell composition/redirection (pipelines, chaining/separators, substitutions, line continuations, or 2>&1), or writes: setup/config/auth, endpoint override, raw GraphQL mutation, create/update/delete/archive/link/attach/comment-write/relation-write.",
       ].join("\n")
     : [
         "Use only the configured read-only Linear MCP typed tools; never use Bash, shell commands, raw GraphQL, or any other tool.",

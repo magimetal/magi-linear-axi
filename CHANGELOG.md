@@ -18,6 +18,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 - Correct benchmark issue prompts to use public Linear identifiers, replace sparse optional-resource cases with grounded interface-common search→view tasks, remove pseudo-evidence from comments and teams, tighten entity-scoped not-found grading, add a bounded AXI parity guide, separate hard safety/policy/error classification, add guarded primitive-reachability preflight, and fingerprint benchmark source, AXI binary, Claude versions, and the exact task manifest so stale or dirty cohorts cannot be compared.
 
+- Compress AXI benchmark condition guidance into one wrapper declaration, compact read grammar, and consolidated safety constraints; retain all five permitted reads and record prompt size estimates in regression tests.
+
+- Make fresh benchmark snapshots compatible with Linear's not-found behavior by confirming absent issue identifiers through bounded, team-scoped issue-number connections instead of error-producing direct lookups.
+
 - Harden Unix Claude timeout process-group cleanup and document that result JSONL contains workspace-sensitive redacted answers while reports remain aggregate-only.
 
 - Make benchmark task prompts and grading hints interface-neutral, enforce typed operation order, exact operands, linked successful result values, and intentional issue-scoped errors in deterministic grading, and validate the search source with a bounded workspace-wide title uniqueness probe before task generation.
