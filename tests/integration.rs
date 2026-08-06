@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
@@ -146,6 +146,10 @@ fn read_request(stream: &mut TcpStream) -> String {
         }
     }
     String::from_utf8(bytes).unwrap()
+}
+fn graphql_request(request: &str) -> Value {
+    let (_, body) = request.split_once("\r\n\r\n").expect("HTTP request body");
+    serde_json::from_str(body).expect("GraphQL JSON request")
 }
 
 #[test]
@@ -358,6 +362,14 @@ fn run_json_with_token(mock: &Mock, args: &[&str], token: &str) -> std::process:
         .env("LINEAR_API_KEY", token)
         .output()
         .unwrap()
+}
+
+fn run_json_request(response: &str, args: &[&str]) -> (std::process::Output, Value) {
+    let mock = Mock::start(vec![response.into()]);
+    let output = run_json(&mock, args);
+    let request = graphql_request(&mock.requests().pop().expect("GraphQL request"));
+    mock.thread.join().unwrap();
+    (output, request)
 }
 
 #[test]
@@ -597,5 +609,227 @@ fn issue_null_reads_are_consistent_structured_api_errors() {
         assert_eq!(value["error"]["code"], 1);
         assert_eq!(value["error"]["message"], "issue ENG-1 not found");
         mock.thread.join().unwrap();
+    }
+}
+
+#[test]
+fn compact_projections_request_only_selected_fields_and_preserve_cardinality() {
+    let compact_view_response = r#"{"data":{"issue":{"identifier":"ENG-1","title":"Short","state":{"name":"Todo","type":"backlog"},"url":"https://linear.app/issue/ENG-1"}}}"#;
+    let (view, request) = run_json_request(
+        compact_view_response,
+        &["issue", "view", "ENG-1", "--fields", "compact"],
+    );
+    assert!(
+        view.status.success(),
+        "{}",
+        String::from_utf8_lossy(&view.stderr)
+    );
+    assert_eq!(
+        request["query"],
+        "query Issue($id:String!) { issue(id:$id) { identifier title url state { name type } } }"
+    );
+    assert_eq!(request["variables"], json!({"id":"ENG-1"}));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&view.stdout).unwrap(),
+        serde_json::from_str::<Value>(compact_view_response).unwrap()["data"]
+    );
+
+    let (query, request) = run_json_request(
+        r#"{"data":{"issues":{"nodes":[{"identifier":"ENG-1","title":"Short"}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}"#,
+        &["issue", "query", "--limit", "7", "--fields", "compact"],
+    );
+    assert!(query.status.success());
+    assert_eq!(
+        request["query"],
+        "query Issues($filter:IssueFilter,$first:Int,$after:String){issues(filter:$filter,first:$first,after:$after){nodes{identifier title} pageInfo{hasNextPage endCursor}}}"
+    );
+    assert_eq!(request["variables"]["first"], 7);
+    let query_output: Value = serde_json::from_slice(&query.stdout).unwrap();
+    assert_eq!(query_output["issues"]["pageInfo"]["hasNextPage"], true);
+
+    let (comments, request) = run_json_request(
+        r#"{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"Body"}],"pageInfo":{"hasNextPage":true,"endCursor":"comments-next"}}}}}"#,
+        &[
+            "issue", "comment", "list", "ENG-1", "--fields", "compact", "--limit", "2",
+        ],
+    );
+    assert!(comments.status.success());
+    assert_eq!(
+        request["query"],
+        "query Comments($id:String!,$first:Int,$after:String){issue(id:$id){comments(first:$first,after:$after){nodes{id body} pageInfo{hasNextPage endCursor}}}}"
+    );
+    assert_eq!(
+        request["variables"],
+        json!({"id":"ENG-1","first":2,"after":null})
+    );
+    let comments_output: Value = serde_json::from_slice(&comments.stdout).unwrap();
+    assert_eq!(
+        comments_output["issue"]["comments"]["pageInfo"]["hasNextPage"],
+        true
+    );
+    assert!(
+        comments_output["issue"]["comments"]["nodes"][0]
+            .get("createdAt")
+            .is_none()
+    );
+
+    let (relations, request) = run_json_request(
+        r#"{"data":{"issue":{"identifier":"ENG-1","relations":{"nodes":[{"type":"blocks","relatedIssue":{"identifier":"ENG-2","title":"Other"}}],"pageInfo":{"hasNextPage":true,"endCursor":"relations-next"}},"inverseRelations":{"nodes":[{"type":"related","issue":{"identifier":"ENG-3","title":"Third"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}"#,
+        &[
+            "issue", "relation", "list", "ENG-1", "--fields", "compact", "--limit", "3",
+        ],
+    );
+    assert!(relations.status.success());
+    assert_eq!(
+        request["query"],
+        "query Relations($id:String!,$first:Int,$after:String){issue(id:$id){identifier relations(first:$first,after:$after){nodes{type relatedIssue{identifier title}} pageInfo{hasNextPage endCursor}} inverseRelations(first:$first,after:$after){nodes{type issue{identifier title}} pageInfo{hasNextPage endCursor}}}}"
+    );
+    assert_eq!(
+        request["variables"],
+        json!({"id":"ENG-1","first":3,"after":null})
+    );
+    let relations_output: Value = serde_json::from_slice(&relations.stdout).unwrap();
+    assert_eq!(
+        relations_output["issue"]["relations"]["pageInfo"]["hasNextPage"],
+        true
+    );
+    assert_eq!(
+        relations_output["issue"]["inverseRelations"]["pageInfo"]["hasNextPage"],
+        false
+    );
+    assert!(
+        relations_output["issue"]["relations"]["nodes"][0]
+            .get("id")
+            .is_none()
+    );
+
+    let (project, request) = run_json_request(
+        r#"{"data":{"project":{"id":"p1","name":"Project","url":"https://linear.app/project/p1","status":{"name":"Planned","type":"planned"}}}}"#,
+        &["project", "view", "p1", "--fields", "compact"],
+    );
+    assert!(project.status.success());
+    assert_eq!(
+        request["query"],
+        "query GetProjectDetails($id:String!){project(id:$id){id name url status{name type}}}"
+    );
+    let project_output: Value = serde_json::from_slice(&project.stdout).unwrap();
+    assert_eq!(project_output["project"].as_object().unwrap().len(), 4);
+}
+
+#[test]
+fn default_projection_contracts_are_unchanged_and_compact_reduces_mocked_bytes() {
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["issue", "view", "ENG-1"],
+            r#"{"data":{"issue":{"identifier":"ENG-1","title":"Rich issue","url":"https://linear.app/issue/ENG-1","description":"A representative long description for payload comparison","state":{"name":"Todo","type":"backlog"},"assignee":{"name":"Agent"},"comments":{"nodes":[{"id":"c1","body":"Context"}]}}}}"#,
+            "query Issue($id:String!) { issue(id:$id) { identifier title url description state { name type } assignee { name } comments { nodes { id body } } } }",
+        ),
+        (
+            &["issue", "query"],
+            r#"{"data":{"issues":{"nodes":[{"id":"i1","identifier":"ENG-1","title":"Rich issue","url":"https://linear.app/issue/ENG-1","priority":2,"state":{"name":"Todo","type":"backlog"},"assignee":{"name":"Agent"}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}"#,
+            "query Issues($filter:IssueFilter,$first:Int,$after:String){issues(filter:$filter,first:$first,after:$after){nodes{id identifier title url priority state{name type} assignee{name}} pageInfo{hasNextPage endCursor}}}",
+        ),
+        (
+            &["issue", "comment", "list", "ENG-1"],
+            r#"{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"Body","createdAt":"2026-01-01","user":{"name":"Agent"}}]}}}}"#,
+            "query Comments($id:String!){ issue(id:$id){ comments{nodes{id body createdAt user{name}}}}}",
+        ),
+        (
+            &["issue", "relation", "list", "ENG-1"],
+            r#"{"data":{"issue":{"identifier":"ENG-1","relations":{"nodes":[{"id":"r1","type":"blocks","relatedIssue":{"identifier":"ENG-2","title":"Other"}}]},"inverseRelations":{"nodes":[]}}}}"#,
+            "query Relations($id:String!){issue(id:$id){identifier relations{nodes{id type relatedIssue{identifier title}}} inverseRelations{nodes{id type issue{identifier title}}}}}",
+        ),
+        (
+            &["project", "view", "p1"],
+            r##"{"data":{"project":{"id":"p1","name":"Project","description":"Description","slugId":"project","url":"https://linear.app/project/p1","status":{"name":"Planned","type":"planned","color":"#fff"},"lead":{"name":"Lead","displayName":"Lead"},"priority":1,"health":"onTrack","startDate":"2026-01-01","targetDate":"2026-02-01","createdAt":"2026-01-01","updatedAt":"2026-01-02"}}}"##,
+            "query GetProjectDetails($id:String!){project(id:$id){id name description slugId url status{name type color} lead{name displayName} priority health startDate targetDate createdAt updatedAt}}",
+        ),
+    ];
+
+    let mut default_view_bytes = None;
+    for (args, response, expected_query) in cases {
+        let (output, request) = run_json_request(response, args);
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(request["query"], *expected_query, "{args:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::from_str::<Value>(response).unwrap()["data"],
+            "{args:?}"
+        );
+        if *args == ["issue", "view", "ENG-1"] {
+            default_view_bytes = Some((
+                request["query"].as_str().unwrap().len(),
+                output.stdout.len(),
+            ));
+        }
+    }
+
+    let compact_response = r#"{"data":{"issue":{"identifier":"ENG-1","title":"Rich issue","url":"https://linear.app/issue/ENG-1","state":{"name":"Todo","type":"backlog"}}}}"#;
+    let (compact, request) = run_json_request(
+        compact_response,
+        &["issue", "view", "ENG-1", "--fields", "compact"],
+    );
+    let (default_query_bytes, default_output_bytes) = default_view_bytes.unwrap();
+    let compact_query_bytes = request["query"].as_str().unwrap().len();
+    assert_eq!((default_query_bytes, compact_query_bytes), (148, 87));
+    assert_eq!((default_output_bytes, compact.stdout.len()), (287, 134));
+}
+
+#[test]
+fn compact_mine_preserves_default_toon_and_pagination_state() {
+    let mock = Mock::start(vec![
+        r#"{"data":{"viewer":{"id":"viewer-1"}}}"#.into(),
+        r#"{"data":{"issues":{"nodes":[{"identifier":"ENG-1","title":"Short"}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}"#.into(),
+    ]);
+    let output = Command::cargo_bin("magi-linear-axi")
+        .unwrap()
+        .args([
+            "--endpoint",
+            &mock.endpoint,
+            "issue",
+            "mine",
+            "--fields",
+            "compact",
+        ])
+        .env("LINEAR_API_KEY", "lin_api_test")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("issues") && stdout.contains("ENG-1"));
+    assert!(stdout.contains("hasNextPage: true"));
+    assert!(!stdout.trim_start().starts_with('{'));
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let query = graphql_request(&requests[1]);
+    assert_eq!(
+        query["query"],
+        "query Issues($filter:IssueFilter,$first:Int,$after:String){issues(filter:$filter,first:$first,after:$after){nodes{identifier title} pageInfo{hasNextPage endCursor}}}"
+    );
+    assert_eq!(
+        query["variables"]["filter"]["assignee"]["id"]["eq"],
+        "viewer-1"
+    );
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn unsupported_field_selections_fail_before_auth_or_network() {
+    for args in [
+        &["issue", "view", "ENG-1", "--fields", "wide"][..],
+        &["issue", "title", "ENG-1", "--fields", "compact"][..],
+        &["issue", "comment", "list", "ENG-1", "--limit", "1"][..],
+        &["project", "update", "p1", "--fields", "compact"][..],
+        &["issue", "view", "ENG-1", "--fields", "compact", "--web"][..],
+        &["project", "view", "p1", "--fields", "compact", "--app"][..],
+    ] {
+        let output = Command::cargo_bin("magi-linear-axi")
+            .unwrap()
+            .args(args)
+            .env_remove("LINEAR_API_KEY")
+            .env("LINEAR_API_URL", "http://127.0.0.1:1/graphql")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
 }

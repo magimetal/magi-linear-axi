@@ -9,6 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 ### Added
 
 - Add non-destructive, read-only AXI versus official Linear MCP benchmark harness with dynamic workspace tasks, layered mutation guards, grounded grading, paired seeded runs, and cohort-safe reports.
+- Add opt-in `--fields compact` projections for issue, comment, relation, and project read commands with bounded compact pagination.
 
 ### Security
 

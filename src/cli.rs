@@ -115,12 +115,12 @@ pub enum AuthCommand {
 #[derive(Debug, Subcommand)]
 pub enum IssueCommand {
     Id(IssueRefArgs),
-    Mine(QueryArgs),
-    List(QueryArgs),
-    Query(QueryArgs),
+    Mine(IssueQueryArgs),
+    List(IssueQueryArgs),
+    Query(IssueQueryArgs),
     Title(IssueRefArgs),
     Start(IssueRefArgs),
-    View(IssueRefArgs),
+    View(IssueViewArgs),
     Url(IssueRefArgs),
     Describe(IssueRefArgs),
     Commits(IssueRefArgs),
@@ -142,6 +142,37 @@ pub enum IssueCommand {
         #[command(subcommand)]
         command: AgentSessionCommand,
     },
+}
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum FieldPreset {
+    Compact,
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct IssueViewArgs {
+    #[command(flatten)]
+    pub issue: IssueRefArgs,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PRESET",
+        conflicts_with_all = ["web", "app"],
+        help = "Select compact issue fields"
+    )]
+    pub fields: Option<FieldPreset>,
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct IssueQueryArgs {
+    #[command(flatten)]
+    pub query: QueryArgs,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PRESET",
+        help = "Select compact issue-list fields"
+    )]
+    pub fields: Option<FieldPreset>,
 }
 #[derive(Debug, Args, Clone, Default)]
 pub struct IssueRefArgs {
@@ -232,7 +263,28 @@ pub enum CommentCommand {
     Add(CommentArgs),
     Delete(IssueRefArgs),
     Update(CommentUpdateArgs),
-    List(IssueRefArgs),
+    List(CommentListArgs),
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct CommentListArgs {
+    #[command(flatten)]
+    pub issue: IssueRefArgs,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PRESET",
+        conflicts_with_all = ["web", "app"],
+        help = "Select compact comment fields"
+    )]
+    pub fields: Option<FieldPreset>,
+    #[arg(
+        long,
+        default_value_t = 50,
+        requires = "fields",
+        help = "Bound compact comments"
+    )]
+    pub limit: u32,
 }
 #[derive(Debug, Args, Clone, Default)]
 pub struct CommentArgs {
@@ -274,7 +326,28 @@ pub struct LinkArgs {
 pub enum RelationCommand {
     Add(RelationArgs),
     Delete(RelationArgs),
-    List(IssueRefArgs),
+    List(RelationListArgs),
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct RelationListArgs {
+    #[command(flatten)]
+    pub issue: IssueRefArgs,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PRESET",
+        conflicts_with_all = ["web", "app"],
+        help = "Select compact relation fields"
+    )]
+    pub fields: Option<FieldPreset>,
+    #[arg(
+        long,
+        default_value_t = 50,
+        requires = "fields",
+        help = "Bound each compact relation connection"
+    )]
+    pub limit: u32,
 }
 #[derive(Debug, Args, Clone)]
 pub struct RelationArgs {
@@ -345,10 +418,24 @@ pub enum UserCommand {
 pub enum ProjectCommand {
     List(ResourceArgs),
     #[command(alias = "v")]
-    View(ResourceArgs),
+    View(ProjectViewArgs),
     Create(ResourceArgs),
     Update(ResourceArgs),
     Delete(ResourceArgs),
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct ProjectViewArgs {
+    #[command(flatten)]
+    pub resource: ResourceArgs,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PRESET",
+        conflicts_with_all = ["web", "app"],
+        help = "Select compact project fields"
+    )]
+    pub fields: Option<FieldPreset>,
 }
 #[derive(Debug, Subcommand)]
 pub enum ProjectUpdateCommand {

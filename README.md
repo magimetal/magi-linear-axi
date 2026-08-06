@@ -178,8 +178,12 @@ magi-linear-axi issue query --team ENG --search 'authentication' --label bug
 magi-linear-axi issue query --assignee <user-id> --project <project-id>
 magi-linear-axi issue view ENG-123
 
+# Opt-in compact reads
+magi-linear-axi issue query --team ENG --fields compact
+magi-linear-axi issue view ENG-123 --fields compact
+
 # Comments
-magi-linear-axi issue comment list ENG-123
+magi-linear-axi issue comment list ENG-123 --fields compact --limit 20
 magi-linear-axi issue comment add ENG-123 --body 'Investigation complete.'
 magi-linear-axi issue comment update <comment-id> --body 'Corrected update.'
 magi-linear-axi issue comment delete <comment-id>
@@ -187,7 +191,7 @@ magi-linear-axi issue comment delete <comment-id>
 # Links, uploads, and relations
 magi-linear-axi issue link ENG-123 https://example.com/runbook --title 'Runbook'
 magi-linear-axi issue attach ENG-123 ./evidence.png --title 'Failure screenshot'
-magi-linear-axi issue relation list ENG-123
+magi-linear-axi issue relation list ENG-123 --fields compact --limit 20
 magi-linear-axi issue relation add ENG-123 blocks ENG-456
 magi-linear-axi issue relation delete ENG-123 blocks <relation-id>
 
@@ -195,6 +199,10 @@ magi-linear-axi issue relation delete ENG-123 blocks <relation-id>
 magi-linear-axi --workspace acme issue view ENG-123 --web
 magi-linear-axi --workspace acme issue view ENG-123 --app
 ```
+
+Compact projections are opt-in: `--fields compact` is supported by issue view, issue mine/list/query, issue comment list, issue relation list, and project view. Compact issue lists return identifier/title plus `pageInfo`. Compact comments and both relation connections default to 50 records (override with `--limit`) and retain `pageInfo`, including `hasNextPage`, so bounded output reports whether records remain. Invalid or unsupported selectors fail during argument parsing with exit `2`, before authentication or network access. Compact relation output omits relation IDs; use default `issue relation list` before deletion.
+
+Representative mocked issue-view regression fixture reduces GraphQL selection from 148 to 87 bytes and rendered JSON from 287 to 134 bytes. These fixed measurements guard payload/output impact before benchmark use.
 
 `--assignee`, `--project`, and `--milestone` filters expect Linear IDs; `--team` accepts team key. Repeat `--state` or `--label` to match multiple values. `issue create` currently sends title, description, team ID, and priority. `issue update` currently sends title, description, priority, and `--unassign`; use raw GraphQL for other issue fields.
 
@@ -233,7 +241,7 @@ magi-linear-axi user list --limit 100 --all
 
 # Projects and project updates
 magi-linear-axi project list --team <team-id> --all
-magi-linear-axi project view <project-id>
+magi-linear-axi project view <project-id> --fields compact
 magi-linear-axi project create --name 'API Reliability' --team <team-id> --description 'Reliability work'
 magi-linear-axi project update <project-id> --name 'API Resilience' --status <status-id> --target-date 2026-06-30
 magi-linear-axi project-update list <project-id> --limit 20
