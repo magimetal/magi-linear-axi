@@ -13,7 +13,7 @@ pub mod user;
 
 use crate::{
     cli::Cli,
-    cli::{ApiArgs, AuthCommand, IssueCommand, QueryArgs, SetupArgs},
+    cli::{ApiArgs, AuthCommand, IssueCommand, SetupArgs},
     config,
     error::AppError,
     output::Output,
@@ -313,6 +313,6 @@ fn write_json(path: &std::path::Path, value: &Value) -> Result<(), AppError> {
 }
 
 pub fn issues(cli: &Cli, cmd: Option<IssueCommand>) -> Result<(), AppError> {
-    let command = cmd.unwrap_or(IssueCommand::Query(QueryArgs::default()));
+    let command = cmd.unwrap_or(IssueCommand::Query(crate::cli::IssueQueryArgs::default()));
     issue::execute(cli, command)
 }

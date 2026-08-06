@@ -45,6 +45,8 @@ magi-linear-axi issue list --team ENG --limit 25
 magi-linear-axi issue query --search 'authentication' --state 'In Progress' --label bug
 magi-linear-axi issue mine --state 'In Progress'
 magi-linear-axi issue view ENG-123
+magi-linear-axi issue query --team ENG --fields compact
+magi-linear-axi issue view ENG-123 --fields compact
 magi-linear-axi issue title ENG-123
 magi-linear-axi issue describe ENG-123
 magi-linear-axi issue url ENG-123
@@ -59,7 +61,7 @@ magi-linear-axi issue delete ENG-123
 Delete safety: inspect target first and retain identifier, team, and exact title; run one delete mutation; then use a narrowly scoped `issue query --team <KEY> --search '<retained title>'` exclusion check. `success:true` means provider accepted request. Never retry delete after success or ambiguous transport failure. Query exclusion is eventual-consistency evidence, not transactional proof; absence from an unfiltered first page is not definitive. Direct reads may be stale, null, or HTTP error, and provider-controlled tombstone behavior cannot be guaranteed by local tests. Read retries: statuses 500/502/503/504 and no-status transient transport failures, at most 3 attempts with 50ms then 100ms backoff. Mutations, uploads, raw API calls (including `--paginate`), and HTTP-200 GraphQL errors do not retry. HTTP error detail is sanitized and previewed to first 512 bytes with `[truncated]` marker.
 
 # Comments
-magi-linear-axi issue comment list ENG-123
+magi-linear-axi issue comment list ENG-123 --fields compact --limit 20
 magi-linear-axi issue comment add ENG-123 --body 'Investigation complete.'
 magi-linear-axi issue comment update <comment-id> --body 'Corrected update.'
 magi-linear-axi issue comment delete <comment-id>
@@ -67,7 +69,7 @@ magi-linear-axi issue comment delete <comment-id>
 # Links, files, and relations
 magi-linear-axi issue link ENG-123 https://example.com/runbook --title 'Runbook'
 magi-linear-axi issue attach ENG-123 ./evidence.png --title 'Failure screenshot'
-magi-linear-axi issue relation list ENG-123
+magi-linear-axi issue relation list ENG-123 --fields compact --limit 20
 magi-linear-axi issue relation add ENG-123 blocks ENG-456
 magi-linear-axi issue relation delete ENG-123 blocks <relation-id>
 
@@ -78,6 +80,8 @@ magi-linear-axi --workspace acme issue view ENG-123 --web
 ```
 
 For filters, `--assignee` and project/milestone values currently expect Linear IDs; team accepts key. Repeat `--state` and `--label` for multiple values.
+
+Use `--fields compact` for issue view/listing, comment list, relation list, and project view when only stable core fields are needed. Compact comment/relation reads default to 50 records, accept `--limit`, and preserve `pageInfo.hasNextPage`; inspect it before treating a bounded connection as complete. Compact relation output omits relation IDs, so use default relation list before deletion. Invalid or unsupported selectors exit `2` before authentication/network.
 
 ## Teams and users
 
@@ -99,7 +103,7 @@ Use Linear UUIDs for team mutations and nested queries unless command explicitly
 ```sh
 magi-linear-axi project list --team <team-id> --limit 50
 magi-linear-axi project list --all
-magi-linear-axi project view <project-id>
+magi-linear-axi project view <project-id> --fields compact
 magi-linear-axi project create --name 'API Reliability' --team <team-id> --description 'Reliability work'
 magi-linear-axi project update <project-id> --name 'API Resilience' --status <status-id> --target-date 2026-06-30
 magi-linear-axi project delete <project-id>
