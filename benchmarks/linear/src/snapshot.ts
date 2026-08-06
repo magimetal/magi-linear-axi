@@ -35,10 +35,10 @@ export const ISSUES_QUERY =
 export const ISSUE_TITLE_SEARCH_QUERY =
 	"query BenchmarkIssueTitleSearch($title:String!,$first:Int!){issues(filter:{title:{containsIgnoreCase:$title}},first:$first){nodes{id identifier title} pageInfo{hasNextPage endCursor}}}";
 export const SEARCH_VALIDATION_LIMIT = 2;
-/** Direct identifier probes are intentionally capped independently of snapshots. */
+/** Team-scoped issue-number probes are intentionally capped independently of snapshots. */
 export const INVALID_IDENTIFIER_PROBE_LIMIT = 10;
 export const INVALID_ISSUE_QUERY =
-	"query BenchmarkConfirmedAbsentIssue($identifier:String!){issue(id:$identifier){id identifier}}";
+	"query BenchmarkConfirmedAbsentIssue($number:Float!,$teamKey:String!){issues(filter:{number:{eq:$number},team:{key:{eq:$teamKey}}},includeArchived:true,first:1){nodes{id identifier} pageInfo{hasNextPage}}}";
 export const ISSUE_DETAIL_QUERY =
 	"query BenchmarkIssueDetail($id:String!,$commentFirst:Int!,$relationFirst:Int!){issue(id:$id){comments(first:$commentFirst){nodes{id body} pageInfo{hasNextPage endCursor}} relations(first:$relationFirst){nodes{type relatedIssue{identifier title}} pageInfo{hasNextPage endCursor}} inverseRelations(first:$relationFirst){nodes{type issue{identifier title}} pageInfo{hasNextPage endCursor}}}}";
 export const PROJECTS_QUERY =
@@ -216,14 +216,15 @@ function boundedFirst(value: number | undefined): number {
 	return Math.min(requested, MAX_SNAPSHOT_LIMIT);
 }
 
-function deterministicAbsentIdentifier(teamKey: string, offset: number): string {
-	const candidate = `${teamKey}-${999_999_999 - offset}`;
-	if (!isAxiRepresentable(candidate)) {
+function deterministicAbsentIssue(teamKey: string, offset: number): { identifier: string; number: number } {
+	const number = 999_999_999 - offset;
+	const identifier = `${teamKey}-${number}`;
+	if (!isAxiRepresentable(identifier)) {
 		throw new Error(
 			`cannot probe a representable invalid issue identifier for team ${teamKey}`,
 		);
 	}
-	return candidate;
+	return { identifier, number };
 }
 
 async function confirmAbsentIssueIdentifier(
@@ -231,21 +232,16 @@ async function confirmAbsentIssueIdentifier(
 	teamKey: string,
 ): Promise<string> {
 	for (let offset = 0; offset < INVALID_IDENTIFIER_PROBE_LIMIT; offset += 1) {
-		const identifier = deterministicAbsentIdentifier(teamKey, offset);
-		const data = await requester(INVALID_ISSUE_QUERY, { identifier });
-		const issueValue = data.issue;
-		if (issueValue === null) {
+		const { identifier, number } = deterministicAbsentIssue(teamKey, offset);
+		const data = await requester(INVALID_ISSUE_QUERY, { number, teamKey });
+		const connection = record(data.issues);
+		if (!Array.isArray(connection.nodes) || record(connection.pageInfo).hasNextPage !== false) {
+			throw new Error(
+				`invalid-issue probe for ${identifier} returned malformed or incomplete connection data`,
+			);
+		}
+		if (connection.nodes.length === 0) {
 			return identifier;
-		}
-		if (issueValue === undefined) {
-			throw new Error(
-				`invalid-issue probe for ${identifier} did not explicitly return issue: null`,
-			);
-		}
-		if (typeof issueValue !== "object" || Array.isArray(issueValue)) {
-			throw new Error(
-				`invalid-issue probe for ${identifier} returned malformed issue data`,
-			);
 		}
 	}
 	throw new Error(

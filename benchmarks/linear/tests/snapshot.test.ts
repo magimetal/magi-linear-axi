@@ -46,7 +46,7 @@ function responses(): Record<string, Record<string, unknown>> {
 				pageInfo: { hasNextPage: false },
 			},
 		},
-		BenchmarkConfirmedAbsentIssue: { issue: null },
+		BenchmarkConfirmedAbsentIssue: { issues: { nodes: [], pageInfo: { hasNextPage: false } } },
 		BenchmarkIssueDetail: {
 			issue: {
 				comments: {
@@ -141,8 +141,9 @@ describe("read-only snapshot capture", () => {
 		expect(calls).toHaveLength(7);
 		expect(calls.map((call) => call.query)).toContain(ISSUES_QUERY);
 		expect(calls.map((call) => call.query)).toContain(ISSUE_TITLE_SEARCH_QUERY);
-		expect(calls.map((call) => call.query)).toContain("query BenchmarkConfirmedAbsentIssue($identifier:String!){issue(id:$identifier){id identifier}}");
-		expect(calls.find((call) => call.query.includes("BenchmarkConfirmedAbsentIssue"))?.variables).toEqual({ identifier: "ENG-999999999" });
+		expect(calls.map((call) => call.query)).toContain(INVALID_ISSUE_QUERY);
+		expect(INVALID_ISSUE_QUERY).toContain("includeArchived:true");
+		expect(calls.find((call) => call.query === INVALID_ISSUE_QUERY)?.variables).toEqual({ number: 999999999, teamKey: "ENG" });
 		expect(
 			calls.find((call) => call.query === ISSUE_TITLE_SEARCH_QUERY)?.variables,
 		).toEqual({ title: "Read latency", first: SEARCH_VALIDATION_LIMIT });
@@ -178,13 +179,13 @@ describe("read-only snapshot capture", () => {
 		expect(snapshotHash(snapshot)).toMatch(/^[a-f0-9]{64}$/u);
 	});
 
-	it("confirms the first directly queried identifier that is explicitly absent", async () => {
+	it("confirms the first team-scoped issue number that is explicitly absent", async () => {
 		const queried: Array<{ query: string; variables?: Record<string, unknown> }> = [];
 		const snapshot = await captureSnapshot({
 			requester: async (query, variables) => {
 				queried.push({ query, variables });
 				if (query === VIEWER_QUERY) return { viewer: { id: "viewer-1" } };
-				if (query === INVALID_ISSUE_QUERY) return { issue: null };
+				if (query === INVALID_ISSUE_QUERY) return { issues: { nodes: [], pageInfo: { hasNextPage: false } } };
 				if (query.includes("BenchmarkTeams")) return { teams: { nodes: [{ id: "team-1", key: "ENG", name: "Engineering" }] } };
 				if (query === ISSUES_QUERY) return { issues: { nodes: [{ id: "issue-1", identifier: "ENG-1", title: "Exact", team: { id: "team-1", key: "ENG", name: "Engineering" } }] } };
 				if (query === ISSUE_TITLE_SEARCH_QUERY) return { issues: { nodes: [{ id: "issue-1", identifier: "ENG-1", title: "Exact" }], pageInfo: { hasNextPage: false } } };
@@ -194,18 +195,18 @@ describe("read-only snapshot capture", () => {
 		});
 		expect(snapshot.confirmedAbsentIssueIdentifier).toBe("ENG-999999999");
 		expect(queried.filter((call) => call.query === INVALID_ISSUE_QUERY)).toHaveLength(1);
-		expect(queried.find((call) => call.query === INVALID_ISSUE_QUERY)?.variables).toEqual({ identifier: "ENG-999999999" });
+		expect(queried.find((call) => call.query === INVALID_ISSUE_QUERY)?.variables).toEqual({ number: 999999999, teamKey: "ENG" });
 	});
 
 	it("tries the next deterministic identifier after a collision and never exceeds the hard probe cap", async () => {
-		const queried: string[] = [];
-		const capture = (responsesForProbe: (identifier: string) => Record<string, unknown>) => captureSnapshot({
+		const queried: number[] = [];
+		const capture = (responsesForProbe: (number: number) => Record<string, unknown>) => captureSnapshot({
 			requester: async (query, variables) => {
 				if (query === VIEWER_QUERY) return { viewer: { id: "viewer-1" } };
 				if (query === INVALID_ISSUE_QUERY) {
-					const identifier = String(variables?.identifier);
-					queried.push(identifier);
-					return responsesForProbe(identifier);
+					const number = Number(variables?.number);
+					queried.push(number);
+					return responsesForProbe(number);
 				}
 				if (query.includes("BenchmarkTeams")) return { teams: { nodes: [{ id: "team-1", key: "ENG", name: "Engineering" }] } };
 				if (query === ISSUES_QUERY) return { issues: { nodes: [{ id: "issue-1", identifier: "ENG-1", title: "Exact", team: { id: "team-1", key: "ENG", name: "Engineering" } }] } };
@@ -214,13 +215,13 @@ describe("read-only snapshot capture", () => {
 				return { projects: { nodes: [] } };
 			},
 		});
-		const snapshot = await capture((identifier) =>
-			identifier.endsWith("999999999") ? { issue: { id: "collision", identifier } } : { issue: null },
-		);
+		const snapshot = await capture((number) => ({
+			issues: { nodes: number === 999999999 ? [{ id: "collision" }] : [], pageInfo: { hasNextPage: false } },
+		}));
 		expect(snapshot.confirmedAbsentIssueIdentifier).toBe("ENG-999999998");
-		expect(queried).toEqual(["ENG-999999999", "ENG-999999998"]);
+		expect(queried).toEqual([999999999, 999999998]);
 
-		await expect(capture(() => ({ issue: { id: "collision", identifier: "collision" } }))).rejects.toThrow(/10 query-only probes/u);
+		await expect(capture(() => ({ issues: { nodes: [{ id: "collision" }], pageInfo: { hasNextPage: false } } }))).rejects.toThrow(/10 query-only probes/u);
 		expect(queried.slice(-10)).toHaveLength(10);
 	});
 
@@ -252,7 +253,7 @@ describe("read-only snapshot capture", () => {
 				if (query === ISSUES_QUERY) {
 					return { issues: { nodes: issues.map((issue) => ({ ...issue, team: { id: "team-1", key: "ENG", name: "Engineering" } })), pageInfo: { hasNextPage: false } } };
 				}
-				if (query === INVALID_ISSUE_QUERY) return { issue: null };
+				if (query === INVALID_ISSUE_QUERY) return { issues: { nodes: [], pageInfo: { hasNextPage: false } } };
 				if (query === ISSUE_TITLE_SEARCH_QUERY) {
 					const title = String(variables?.title);
 					return {
@@ -283,7 +284,7 @@ describe("read-only snapshot capture", () => {
 			requester: async (query, variables) => {
 				calls.push({ query, variables });
 				if (query === VIEWER_QUERY) return { viewer: { id: "viewer-1" } };
-				if (query === INVALID_ISSUE_QUERY) return { issue: null };
+				if (query === INVALID_ISSUE_QUERY) return { issues: { nodes: [], pageInfo: { hasNextPage: false } } };
 				if (query.includes("BenchmarkTeams")) return { teams: { nodes: [{ id: "team-1", key: "ENG", name: "Engineering" }] } };
 				if (query === ISSUES_QUERY) return { issues: { nodes: [
 					{ id: "long", identifier: "ENG-1", title: longTitle, team: { id: "team-1", key: "ENG", name: "Engineering" } },
@@ -306,7 +307,7 @@ describe("read-only snapshot capture", () => {
 				if (query === VIEWER_QUERY) return { viewer: { id: "viewer-1" } };
 				if (query.includes("BenchmarkTeams")) return { teams: { nodes: [{ id: "team-1", key: "ENG", name: "Engineering" }], pageInfo: { hasNextPage: false } } };
 				if (query === ISSUES_QUERY) return { issues: { nodes: [{ id: "issue-1", identifier: "ENG-1", title: "Exact", team: { id: "team-1", key: "ENG", name: "Engineering" } }], pageInfo: { hasNextPage: false } } };
-				if (query === INVALID_ISSUE_QUERY) return { issue: null };
+				if (query === INVALID_ISSUE_QUERY) return { issues: { nodes: [], pageInfo: { hasNextPage: false } } };
 				if (query === ISSUE_TITLE_SEARCH_QUERY) return { issues: probe };
 				if (query === ISSUE_DETAIL_QUERY) return { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false } }, relations: { nodes: [], pageInfo: { hasNextPage: false } }, inverseRelations: { nodes: [], pageInfo: { hasNextPage: false } } } };
 				return { projects: { nodes: [], pageInfo: { hasNextPage: false } } };
@@ -337,7 +338,7 @@ describe("read-only snapshot capture", () => {
 					return {
 						issues: { nodes: issueNodes, pageInfo: { hasNextPage: true } },
 					};
-				if (query === INVALID_ISSUE_QUERY) return { issue: null };
+				if (query === INVALID_ISSUE_QUERY) return { issues: { nodes: [], pageInfo: { hasNextPage: false } } };
 				if (query.includes("BenchmarkTeams"))
 					return {
 						teams: {
@@ -393,7 +394,7 @@ describe("read-only snapshot capture", () => {
 								],
 							},
 						};
-					if (query === INVALID_ISSUE_QUERY) return { issue: null };
+					if (query === INVALID_ISSUE_QUERY) return { issues: { nodes: [], pageInfo: { hasNextPage: false } } };
 					if (query.includes("BenchmarkIssueDetail"))
 						return Promise.reject(
 							new GraphqlSafetyError("injected detail mutation"),

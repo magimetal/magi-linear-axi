@@ -20,6 +20,24 @@ pub enum Kind {
 }
 
 pub fn run(cli: &Cli, kind: Kind, op: &str, a: crate::cli::ResourceArgs) -> Result<(), AppError> {
+    run_impl(cli, kind, op, a, None)
+}
+pub fn run_with_fields(
+    cli: &Cli,
+    kind: Kind,
+    op: &str,
+    a: crate::cli::ResourceArgs,
+    fields: Option<crate::cli::FieldPreset>,
+) -> Result<(), AppError> {
+    run_impl(cli, kind, op, a, fields)
+}
+fn run_impl(
+    cli: &Cli,
+    kind: Kind,
+    op: &str,
+    a: crate::cli::ResourceArgs,
+    fields: Option<crate::cli::FieldPreset>,
+) -> Result<(), AppError> {
     let cfg = config::Config::load(cli.endpoint.clone(), cli.workspace.clone())?;
     let client = crate::client::LinearClient::new(cfg.endpoint, config::api_key()?)?;
     let out = Output::new(cli.format.clone(), cli.full);
@@ -33,7 +51,7 @@ pub fn run(cli: &Cli, kind: Kind, op: &str, a: crate::cli::ResourceArgs) -> Resu
         return Ok(());
     }
     let vars = vars(&a)?;
-    let (query, variables) = document(kind, op, id.as_deref(), vars)?;
+    let (query, variables) = document(kind, op, id.as_deref(), vars, fields)?;
     let value = if a.all && op == "list" {
         client.paginate(query, variables)?
     } else if op == "list" || op == "view" || op == "members" || op == "states" || op == "autolinks"
@@ -97,8 +115,22 @@ fn document(
     op: &str,
     _id: Option<&str>,
     mut v: Value,
+    fields: Option<crate::cli::FieldPreset>,
 ) -> Result<(&'static str, Value), AppError> {
     normalize_variables(k, op, &mut v)?;
+    if matches!(
+        (k, op, fields),
+        (
+            Kind::Project,
+            "view",
+            Some(crate::cli::FieldPreset::Compact)
+        )
+    ) {
+        return Ok((
+            "query GetProjectDetails($id:String!){project(id:$id){id name url status{name type}}}",
+            v,
+        ));
+    }
     let q = match (k, op) {
         (Kind::Team, "list") => {
             "query GetTeams($first:Int,$after:String){teams(first:$first,after:$after){nodes{id name key description icon color cyclesEnabled createdAt updatedAt archivedAt} pageInfo{hasNextPage endCursor}}}"

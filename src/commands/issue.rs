@@ -59,18 +59,23 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
         IssueCommand::Url(a) => one(cli, &issue_id(a.issue.as_deref())?, "url"),
         IssueCommand::Describe(a) => one(cli, &issue_id(a.issue.as_deref())?, "description"),
         IssueCommand::View(a) => {
-            let id = issue_id(a.issue.as_deref())?;
-            if a.web || a.app {
-                return open_issue_url(cli, &id, a.web);
+            let id = issue_id(a.issue.issue.as_deref())?;
+            if a.issue.web || a.issue.app {
+                return open_issue_url(cli, &id, a.issue.web);
             }
             one(
                 cli,
                 &id,
-                "description state { name type } assignee { name } comments { nodes { id body } }",
+                match a.fields {
+                    Some(FieldPreset::Compact) => "state { name type }",
+                    None => {
+                        "description state { name type } assignee { name } comments { nodes { id body } }"
+                    }
+                },
             )
         }
-        IssueCommand::Mine(a) => query(cli, a, true),
-        IssueCommand::List(a) | IssueCommand::Query(a) => query(cli, a, false),
+        IssueCommand::Mine(a) => query(cli, a.query, a.fields, true),
+        IssueCommand::List(a) | IssueCommand::Query(a) => query(cli, a.query, a.fields, false),
         IssueCommand::Start(a) => {
             let id = issue_id(a.issue.as_deref())?;
             mutate(
@@ -120,7 +125,7 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
         IssueCommand::AgentSession { command } => agent_session(cli, command),
     }
 }
-fn query(cli: &Cli, a: QueryArgs, mine: bool) -> Result<(), AppError> {
+fn query(cli: &Cli, a: QueryArgs, fields: Option<FieldPreset>, mine: bool) -> Result<(), AppError> {
     let mut filter = serde_json::Map::new();
     if let Some(s) = a.search {
         filter.insert("title".into(), json!({"containsIgnoreCase": s}));
@@ -156,7 +161,14 @@ fn query(cli: &Cli, a: QueryArgs, mine: bool) -> Result<(), AppError> {
             .ok_or_else(|| AppError::api("viewer has no id"))?;
         filter.insert("assignee".into(), json!({"id": {"eq": id}}));
     }
-    let q = "query Issues($filter:IssueFilter,$first:Int,$after:String){issues(filter:$filter,first:$first,after:$after){nodes{id identifier title url priority state{name type} assignee{name}} pageInfo{hasNextPage endCursor}}}";
+    let q = match fields {
+        Some(FieldPreset::Compact) => {
+            "query Issues($filter:IssueFilter,$first:Int,$after:String){issues(filter:$filter,first:$first,after:$after){nodes{identifier title} pageInfo{hasNextPage endCursor}}}"
+        }
+        None => {
+            "query Issues($filter:IssueFilter,$first:Int,$after:String){issues(filter:$filter,first:$first,after:$after){nodes{id identifier title url priority state{name type} assignee{name}} pageInfo{hasNextPage endCursor}}}"
+        }
+    };
     run(
         cli,
         q,
@@ -219,11 +231,21 @@ fn update(cli: &Cli, a: IssueUpdateArgs) -> Result<(), AppError> {
 }
 fn comment(cli: &Cli, c: CommentCommand) -> Result<(), AppError> {
     match c {
-        CommentCommand::List(a) => run(
-            cli,
-            "query Comments($id:String!){ issue(id:$id){ comments{nodes{id body createdAt user{name}}}}}",
-            json!({"id":issue_id(a.issue.as_deref())?}),
-        ),
+        CommentCommand::List(a) => {
+            let id = issue_id(a.issue.issue.as_deref())?;
+            match a.fields {
+                Some(FieldPreset::Compact) => run(
+                    cli,
+                    "query Comments($id:String!,$first:Int,$after:String){issue(id:$id){comments(first:$first,after:$after){nodes{id body} pageInfo{hasNextPage endCursor}}}}",
+                    json!({"id":id,"first":a.limit,"after":null}),
+                ),
+                None => run(
+                    cli,
+                    "query Comments($id:String!){ issue(id:$id){ comments{nodes{id body createdAt user{name}}}}}",
+                    json!({"id":id}),
+                ),
+            }
+        }
         CommentCommand::Add(a) => mutate(
             cli,
             "mutation CommentCreate($input:CommentCreateInput!){ commentCreate(input:$input){success comment{id body}} }",
@@ -258,11 +280,21 @@ fn attach(cli: &Cli, a: AttachArgs) -> Result<(), AppError> {
 }
 fn relation(cli: &Cli, c: RelationCommand) -> Result<(), AppError> {
     match c {
-        RelationCommand::List(a) => run(
-            cli,
-            "query Relations($id:String!){issue(id:$id){identifier relations{nodes{id type relatedIssue{identifier title}}} inverseRelations{nodes{id type issue{identifier title}}}}}",
-            json!({"id":issue_id(a.issue.as_deref())?}),
-        ),
+        RelationCommand::List(a) => {
+            let id = issue_id(a.issue.issue.as_deref())?;
+            match a.fields {
+                Some(FieldPreset::Compact) => run(
+                    cli,
+                    "query Relations($id:String!,$first:Int,$after:String){issue(id:$id){identifier relations(first:$first,after:$after){nodes{type relatedIssue{identifier title}} pageInfo{hasNextPage endCursor}} inverseRelations(first:$first,after:$after){nodes{type issue{identifier title}} pageInfo{hasNextPage endCursor}}}}",
+                    json!({"id":id,"first":a.limit,"after":null}),
+                ),
+                None => run(
+                    cli,
+                    "query Relations($id:String!){issue(id:$id){identifier relations{nodes{id type relatedIssue{identifier title}}} inverseRelations{nodes{id type issue{identifier title}}}}}",
+                    json!({"id":id}),
+                ),
+            }
+        }
         RelationCommand::Add(a) => mutate(
             cli,
             "mutation RelationCreate($input:IssueRelationCreateInput!){issueRelationCreate(input:$input){success issueRelation{id}}}",

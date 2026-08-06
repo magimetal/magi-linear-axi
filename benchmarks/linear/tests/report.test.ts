@@ -62,6 +62,28 @@ describe("report aggregation", () => {
     expect(csv).not.toContain("secret dynamic answer");
   });
 
+  it("reports deterministic/judge agreement and excludes skipped or error judges", () => {
+    const results = [
+      result({ llmGrade: { status: "passed", model: "judge" } }),
+      result({
+        resultId: "agree-failed",
+        deterministicGrade: { ...result().deterministicGrade, passed: false },
+        llmGrade: { status: "failed", model: "judge" },
+      }),
+      result({ resultId: "disagree", llmGrade: { status: "failed", model: "judge" } }),
+      result({ resultId: "judge-error", llmGrade: { status: "error", model: "judge" } }),
+      result({ resultId: "judge-skipped" }),
+    ];
+    const aggregate = aggregateResults(results);
+    expect(aggregate.judgeAgreement).toBe(2);
+    expect(aggregate.judgeAgreementConsidered).toBe(3);
+    expect(aggregate.judgeAgreementRate).toBeCloseTo(2 / 3);
+    expect(renderMarkdownReport(results, aggregate)).toContain("2/3 (66.7%)");
+    const csv = renderCsvReport(aggregate);
+    expect(csv).toContain("judge_agreement,judge_agreement_considered,judge_agreement_rate");
+    expect(csv).toContain(",2,3,0.666667,");
+  });
+
   it("counts each incident separately from affected-run rates", () => {
     const aggregate = aggregateResults([
       result({

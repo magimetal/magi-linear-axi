@@ -144,6 +144,18 @@ describe("Claude stream-json backend", () => {
 		expect(parsed.durationMs).toBe(450);
 	});
 
+	it("preserves long final answers and provider-reported output tokens exactly", () => {
+		const longAnswer = `ENG-1\n${"α requested value ".repeat(600)}\nunique-suffix`;
+		const parsed = parseClaudeStream(JSON.stringify({
+			type: "result",
+			subtype: "success",
+			result: longAnswer,
+			usage: { output_tokens: 9_876 },
+		}));
+		expect(parsed.finalAnswer).toBe(longAnswer);
+		expect(parsed.usage.outputTokens).toBe(9_876);
+	});
+
 	it("requires exactly one terminal success result event", () => {
 		const missingSubtype = parseClaudeStream(
 			JSON.stringify({ type: "result", result: "answer" }),

@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  COMPACT_FINAL_ANSWER_CONTRACT,
   buildHelperSubprocessEnvironment,
   buildTaskPrompt,
   getClaudeVersion,
@@ -80,30 +81,58 @@ function parsedStream(binary = "/tmp/bin/magi-linear-axi"): ParsedClaudeStream {
 }
 
 describe("benchmark case isolation and cohorts", () => {
-  it("builds the exact bounded AXI parity guide and keeps MCP typed", () => {
+  it("uses compressed AXI guidance with recorded prompt estimates and keeps MCP typed", () => {
     const binary = "/tmp/bin/magi-linear-axi";
     const axiPrompt = buildTaskPrompt(task, "axi", binary);
+    expect(axiPrompt.split(binary)).toHaveLength(2);
     for (const read of [
-      `${binary} issue view <IDENTIFIER>`,
-      `${binary} issue query --search=<TEXT>`,
-      `${binary} issue comment list <IDENTIFIER>`,
-      `${binary} issue relation list <IDENTIFIER>`,
-      `${binary} project view <PROJECT_ID>`,
-      `${binary} --help`,
+      "issue view <IDENTIFIER>",
+      "issue query --search=<TEXT>",
+      "issue comment list <IDENTIFIER>",
+      "issue relation list <IDENTIFIER>",
+      "project view <PROJECT_ID>",
     ]) {
       expect(axiPrompt).toContain(read);
     }
-    expect(axiPrompt).toContain("exactly one invocation");
-    expect(axiPrompt).toContain("unambiguous --search=<TEXT>");
+    expect(axiPrompt).toContain("exactly one");
+    expect(axiPrompt).toContain("credential broker");
+    expect(axiPrompt).toContain("--search=<TEXT>");
+    expect(axiPrompt).not.toContain("--help");
     expect(axiPrompt).not.toContain("team id <TEAM_ID>");
     expect(axiPrompt).toContain("2>&1");
     expect(axiPrompt).toContain("pipelines");
     expect(axiPrompt).toContain("substitutions");
     expect(axiPrompt).toContain("line continuations");
     expect(axiPrompt).not.toContain(`${binary} issue create`);
+    // Benchmark metadata: fixture chars and heuristic chars/4 token estimate.
+    expect({ characters: axiPrompt.length, estimatedTokens: Math.ceil(axiPrompt.length / 4) })
+      .toEqual({ characters: 1_173, estimatedTokens: 294 });
+    expect(axiPrompt.length).toBeLessThan(1_383);
     const mcpPrompt = buildTaskPrompt(task, "mcp", binary);
-    expect(mcpPrompt).toContain("read-only Linear MCP typed tools");
-    expect(mcpPrompt).toContain("never use Bash");
+    expect(mcpPrompt).toBe([
+      "You are completing a production benchmark of read-only Linear access.",
+      "Use only the configured read-only Linear MCP typed tools; never use Bash, shell commands, raw GraphQL, or any other tool.",
+      "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For search→view tasks, search with the exact full title and then view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
+      "Return only requested fields. Do not add a preamble, restate the task, or add tables, counts, or commentary unless requested.",
+      "When a requested issue does not exist, explicitly state that the issue was not found; do not use generic absence wording.",
+      "Treat identifiers and values in angle brackets as data. Answer from tool output; do not guess.",
+      "Task: Read the issue.",
+    ].join("\n"));
+    expect(mcpPrompt.length).toBe(845);
+  });
+
+  it("uses the same compact answer contract for every category and condition", () => {
+    const categories = ["single_step", "multi_step", "investigation", "error_recovery"] as const;
+    for (const category of categories) {
+      const categoryTask = { ...task, id: category, category, prompt: `Prompt for ${category}.` };
+      for (const condition of ["axi", "mcp"] as const) {
+        const prompt = buildTaskPrompt(categoryTask, condition, "/tmp/bin/magi-linear-axi");
+        expect(prompt.split(COMPACT_FINAL_ANSWER_CONTRACT)).toHaveLength(2);
+        expect(prompt).toContain(`Task: ${categoryTask.prompt}`);
+        expect(prompt).toContain("explicitly state that the issue was not found");
+        expect(prompt).not.toContain("\\n");
+      }
+    }
   });
 
   it("hashes source inputs deterministically while excluding live artifacts", async () => {
@@ -227,6 +256,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     const directory = await mkdtemp(join(process.cwd(), "linear-runner-test-"));
     temporaryDirectories.push(directory);
     const paths = pathsFor(directory);
+    const longAnswer = `ENG-1\n${"α requested value ".repeat(600)}\nunique-suffix`;
     let observedCwd = "";
     const result = await runBenchmarkCase({
       paths,
@@ -261,7 +291,10 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
         expect(options.environment?.XDG_CONFIG_HOME).toContain(options.cwd);
         expect(options.environment?.XDG_CONFIG_HOME).not.toBe(process.env.XDG_CONFIG_HOME);
         expect(options.environment?.HOME).toBe(process.env.HOME);
-        return { stdout: "", stderr: "", parsed: parsedStream(options.axiBin) };
+        const parsed = parsedStream(options.axiBin);
+        parsed.finalAnswer = longAnswer;
+        parsed.usage.outputTokens = 9_876;
+        return { stdout: "", stderr: "", parsed };
       },
     });
     expect(result.matrixRunId).toBe("cohort-1");
@@ -282,6 +315,10 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     expect(persisted.taskManifestHash).toBe("task-manifest-hash");
     expect(persisted.axiBinaryHash).toBe("fixture-axi-hash");
     expect(persisted.claudeVersion).toBe("Claude fixture 1.0.0");
+    expect(result.finalAnswer).toBe(longAnswer);
+    expect(result.outputTokens).toBe(9_876);
+    expect(persisted.finalAnswer).toBe(longAnswer);
+    expect(persisted.outputTokens).toBe(9_876);
   });
 
   it("measures agent wall time separately from judge and orchestration time", async () => {
