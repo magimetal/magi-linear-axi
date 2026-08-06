@@ -32,12 +32,25 @@ function runExecutable(
 
 describe("pre-execution AXI credential broker", () => {
 	it("rejects unsafe and unknown argv before a child can start", () => {
-		expect(() => validateAxiBrokerArgv(["issue", "view", "ENG-1"])).not.toThrow();
-		expect(() => validateAxiBrokerArgv(["issue", "query", "--search=latency"])).not.toThrow();
-		expect(() => validateAxiBrokerArgv(["issue", "query", "--search=-leading title"])).not.toThrow();
+		expect(() => validateAxiBrokerArgv(["issue", "view", "ENG-1", "--fields", "compact"])).not.toThrow();
+		expect(() => validateAxiBrokerArgv(["issue", "query", "--search=latency", "--fields", "compact"])).not.toThrow();
+		expect(() => validateAxiBrokerArgv(["issue", "comment", "list", "ENG-1", "--fields", "compact", "--limit=10"])).not.toThrow();
+		expect(() => validateAxiBrokerArgv(["issue", "relation", "list", "ENG-1", "--fields", "compact", "--limit=10"])).not.toThrow();
+		expect(() => validateAxiBrokerArgv(["project", "view", "project-1", "--fields", "compact"])).not.toThrow();
+		expect(() => validateAxiBrokerArgv(["issue", "query", "--search=-leading title", "--fields", "compact"])).not.toThrow();
 		expect(() => validateAxiBrokerArgv(["issue", "query", "--search", "latency"])).toThrow(/unambiguous|search/u);
 		expect(() => validateAxiBrokerArgv(["team", "id", "team-1"])).toThrow(/unknown|disallowed|malformed/u);
+		expect(() => validateAxiBrokerArgv(["team", "list", "--fields", "compact"])).toThrow(/unknown|disallowed|malformed/u);
+		expect(() => validateAxiBrokerArgv(["issue", "comment", "list", "ENG-1", "--fields", "compact", "--search=x", "--limit=10"])).toThrow(/not allowed|malformed/u);
 		expect(() => validateAxiBrokerArgv(["issue", "view", "ENG-1", "--endpoint", "https://api.linear.app/graphql"])).toThrow(/pinned endpoint/u);
+		expect(() => validateAxiBrokerArgv(["issue", "view", "ENG-1"])).toThrow(/fields compact/u);
+		expect(() => validateAxiBrokerArgv(["issue", "view", "ENG-1", "--fields", "full"])).toThrow(/compact/u);
+		expect(() => validateAxiBrokerArgv(["issue", "view", "ENG-1", "--fields", "compact", "--fields", "compact"])).toThrow(/duplicate.*fields/u);
+		expect(() => validateAxiBrokerArgv(["issue", "comment", "list", "ENG-1", "--fields", "compact"])).toThrow(/limit/u);
+		expect(() => validateAxiBrokerArgv(["issue", "relation", "list", "ENG-1", "--fields", "compact", "--limit=11"])).toThrow(/exactly 10/u);
+		expect(() => validateAxiBrokerArgv(["issue", "query", "--search=latency", "--fields", "compact", "--limit=10"])).toThrow(/not allowed/u);
+		expect(() => validateAxiBrokerArgv(["--help", "--fields", "compact"])).toThrow(/fields/u);
+		expect(() => validateAxiBrokerArgv(["--version", "--fields", "compact"])).toThrow(/version|fields/u);
 		expect(() => validateAxiBrokerArgv(["issue", "create", "--title", "no"])).toThrow(/disallowed|unknown|malformed/u);
 		expect(() => validateAxiBrokerArgv(["api", "query { viewer { id } }"])).toThrow(/raw AXI API/u);
 		expect(() => validateAxiBrokerArgv(["unknown", "read", "ENG-1"])).toThrow(/unknown|disallowed/u);
@@ -78,19 +91,19 @@ describe("pre-execution AXI credential broker", () => {
 			expect(wrapperSource).not.toContain("fake-key-not-for-wrapper");
 			expect((await stat(broker.directory)).mode & 0o777).toBe(0o700);
 			expect((await stat(broker.wrapperPath)).mode & 0o777).toBe(0o700);
-			const valid = await runExecutable(broker.wrapperPath, ["issue", "view", "ENG-1", "--format", "json"]);
+			const valid = await runExecutable(broker.wrapperPath, ["issue", "view", "ENG-1", "--fields", "compact", "--format", "json"]);
 			expect(valid.code).toBe(7);
 			expect(valid.stdout).toContain("bounded fake output");
 			const observedText = await readFile(observed, "utf8");
 			expect(observedText).toContain("fake-key-not-for-wrapper");
 			expect(observedText).toContain("https://api.linear.app/graphql");
 			expect(observedText).toContain(cwd);
-			expect(observedText).toContain("issue\nview\nENG-1\n--format\njson");
+			expect(observedText).toContain("issue\nview\nENG-1\n--fields\ncompact\n--format\njson");
 
 			await writeFile(observed, "");
 			const leadingDashSearch = await runExecutable(
 				broker.wrapperPath,
-				["issue", "query", "--search=-leading title"],
+				["issue", "query", "--search=-leading title", "--fields", "compact"],
 			);
 			expect(leadingDashSearch.code).toBe(7);
 			expect(await readFile(observed, "utf8")).toContain(
@@ -98,7 +111,7 @@ describe("pre-execution AXI credential broker", () => {
 			);
 			await writeFile(observed, "");
 			for (const unsafe of [
-				["issue", "view", "ENG-1", "--endpoint", "https://evil.example/graphql"],
+				["issue", "view", "ENG-1", "--fields", "compact", "--endpoint", "https://evil.example/graphql"],
 				["issue", "delete", "ENG-1"],
 				["api", "mutation { issueDelete { success } }"],
 				["issue", "get", "ENG-1"],
