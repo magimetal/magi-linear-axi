@@ -18,6 +18,10 @@ export interface AggregateRow {
 	deterministicPassed: number;
 	llmPassed: number;
 	llmConsidered: number;
+	/** Deterministic/judge agreement among passed or failed judge results only. */
+	judgeAgreement: number;
+	judgeAgreementConsidered: number;
+	judgeAgreementRate: number;
 	safetyViolations: number;
 	unsafeRuns: number;
 	safetyRate: number;
@@ -84,6 +88,8 @@ interface Totals {
 	deterministicPassed: number;
 	llmPassed: number;
 	llmConsidered: number;
+	judgeAgreement: number;
+	judgeAgreementConsidered: number;
 	safetyViolations: number;
 	unsafeRuns: number;
 	policyIncidents: number;
@@ -125,6 +131,8 @@ function newTotals(): Totals {
 		deterministicPassed: 0,
 		llmPassed: 0,
 		llmConsidered: 0,
+		judgeAgreement: 0,
+		judgeAgreementConsidered: 0,
 		safetyViolations: 0,
 		unsafeRuns: 0,
 		policyIncidents: 0,
@@ -163,6 +171,12 @@ function addResult(totals: Totals, result: BenchmarkResult): void {
 	if (result.llmGrade.status !== "skipped") {
 		totals.llmConsidered += 1;
 		totals.llmPassed += result.llmGrade.status === "passed" ? 1 : 0;
+	}
+	if (result.llmGrade.status === "passed" || result.llmGrade.status === "failed") {
+		totals.judgeAgreementConsidered += 1;
+		if (result.deterministicGrade.passed === (result.llmGrade.status === "passed")) {
+			totals.judgeAgreement += 1;
+		}
 	}
 	const policyIncidents =
 		result.policyIncidentCount ?? result.policyIncidents?.length ?? 0;
@@ -248,6 +262,9 @@ function finishRow(
 		deterministicPassed: totals.deterministicPassed,
 		llmPassed: totals.llmPassed,
 		llmConsidered: totals.llmConsidered,
+		judgeAgreement: totals.judgeAgreement,
+		judgeAgreementConsidered: totals.judgeAgreementConsidered,
+		judgeAgreementRate: rate(totals.judgeAgreement, totals.judgeAgreementConsidered),
 		safetyViolations: totals.safetyViolations,
 		unsafeRuns: totals.unsafeRuns,
 		safetyRate: rate(totals.unsafeRuns, totals.runs),
@@ -733,7 +750,7 @@ function incidentCell(
 }
 
 function rowMarkdown(row: AggregateRow): string {
-	return `| ${row.key} | ${row.runs} | ${row.passed} | ${percent(row.passRate)} | ${row.deterministicPassed} | ${row.llmPassed}/${row.llmConsidered} | ${incidentCell(row.safetyViolations, row.unsafeRuns, row.safetyRate)} | ${incidentCell(row.policyIncidents, row.policyIncidentRuns, row.policyIncidentRate)} | ${incidentCell(row.commandErrors, row.commandErrorRuns, row.commandErrorRate)} | ${incidentCell(row.apiErrors, row.apiErrorRuns, row.apiErrorRate)} | ${incidentCell(row.otherToolErrors, row.otherToolErrorRuns, row.otherToolErrorRate)} | ${incidentCell(row.infrastructureErrors, row.infrastructureErrorRuns, row.infrastructureErrorRate)} | ${incidentCell(row.expectedErrors, row.expectedErrorRuns, row.expectedErrorRate)} | ${incidentCell(row.errors, row.errorRuns, row.errorRate)} | ${fixed(row.meanInputTokens)} | ${fixed(row.meanCacheReadInputTokens)} | ${fixed(row.meanCacheCreationInputTokens)} | ${fixed(row.meanOutputTokens)} | ${costMean(row)} (${row.reportedCostSamples}/${row.runs}) | ${fixed(row.meanWallTimeMs)} | ${fixed(row.p50WallTimeMs)}/${fixed(row.p95WallTimeMs)} | ${fixed(row.meanTurns)} | ${fixed(row.meanToolCalls)} | ${fixed(row.p50ToolCalls)}/${fixed(row.p95ToolCalls)} |`;
+	return `| ${row.key} | ${row.runs} | ${row.passed} | ${percent(row.passRate)} | ${row.deterministicPassed} | ${row.llmPassed}/${row.llmConsidered} | ${row.judgeAgreement}/${row.judgeAgreementConsidered} (${percent(row.judgeAgreementRate)}) | ${incidentCell(row.safetyViolations, row.unsafeRuns, row.safetyRate)} | ${incidentCell(row.policyIncidents, row.policyIncidentRuns, row.policyIncidentRate)} | ${incidentCell(row.commandErrors, row.commandErrorRuns, row.commandErrorRate)} | ${incidentCell(row.apiErrors, row.apiErrorRuns, row.apiErrorRate)} | ${incidentCell(row.otherToolErrors, row.otherToolErrorRuns, row.otherToolErrorRate)} | ${incidentCell(row.infrastructureErrors, row.infrastructureErrorRuns, row.infrastructureErrorRate)} | ${incidentCell(row.expectedErrors, row.expectedErrorRuns, row.expectedErrorRate)} | ${incidentCell(row.errors, row.errorRuns, row.errorRate)} | ${fixed(row.meanInputTokens)} | ${fixed(row.meanCacheReadInputTokens)} | ${fixed(row.meanCacheCreationInputTokens)} | ${fixed(row.meanOutputTokens)} | ${costMean(row)} (${row.reportedCostSamples}/${row.runs}) | ${fixed(row.meanWallTimeMs)} | ${fixed(row.p50WallTimeMs)}/${fixed(row.p95WallTimeMs)} | ${fixed(row.meanTurns)} | ${fixed(row.meanToolCalls)} | ${fixed(row.p50ToolCalls)}/${fixed(row.p95ToolCalls)} |`;
 }
 
 export interface ReportMetadata {
@@ -798,11 +815,11 @@ export function metadataFromResults(
 }
 
 const markdownHeader =
-	"| Run/task | Runs | Passes | Pass rate | Deterministic | LLM | Safety violations / unsafe runs (hard safety rate) | Policy incidents / affected runs (rate) | Command errors / affected runs (rate) | API errors / affected runs (rate) | Other tool errors / affected runs (rate) | Infrastructure errors / affected runs (rate) | Expected errors / affected runs (rate) | Unexpected errors / affected runs (rate) | Mean input tokens | Mean cache-read tokens | Mean cache-creation tokens | Mean output tokens | Mean reported cost USD (covered/runs) | Mean agent wall time ms | p50/p95 agent wall time ms | Mean turns | Mean tool calls | p50/p95 tool calls |";
+	"| Run/task | Runs | Passes | Pass rate | Deterministic | LLM | Judge agreement (passed/failed only) | Safety violations / unsafe runs (hard safety rate) | Policy incidents / affected runs (rate) | Command errors / affected runs (rate) | API errors / affected runs (rate) | Other tool errors / affected runs (rate) | Infrastructure errors / affected runs (rate) | Expected errors / affected runs (rate) | Unexpected errors / affected runs (rate) | Mean input tokens | Mean cache-read tokens | Mean cache-creation tokens | Mean output tokens | Mean reported cost USD (covered/runs) | Mean agent wall time ms | p50/p95 agent wall time ms | Mean turns | Mean tool calls | p50/p95 tool calls |";
 const markdownSeparator =
-	"| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |";
+	"| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |";
 const emptyMarkdownRow =
-	"| (no results) | 0 | 0 | 0.0% | 0 | 0/0 | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 | 0 | 0 | 0 | n/a (0/0) | 0 | 0/0 | 0 | 0 | 0/0 |";
+	"| (no results) | 0 | 0 | 0.0% | 0 | 0/0 | 0/0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 | 0 | 0 | 0 | n/a (0/0) | 0 | 0/0 | 0 | 0 | 0/0 |";
 
 export function renderMarkdownReport(
 	results: readonly BenchmarkResult[],
@@ -823,6 +840,7 @@ export function renderMarkdownReport(
 		`- Overall passes: ${aggregate.passed}/${aggregate.runs} (${percent(aggregate.runs === 0 ? 0 : aggregate.passed / aggregate.runs)})`,
 		`- Deterministic passes: ${aggregate.deterministicPassed}/${aggregate.runs}`,
 		`- LLM judge passes: ${aggregate.llmPassed}/${aggregate.llmConsidered} considered`,
+		`- Judge agreement (deterministic vs judge, passed/failed judge results only): ${aggregate.judgeAgreement}/${aggregate.judgeAgreementConsidered} (${percent(aggregate.judgeAgreementRate)})`,
 		`- Totals (not comparable averages) — input/cache/output tokens: ${aggregate.inputTokens}/${aggregate.cacheReadInputTokens + aggregate.cacheCreationInputTokens}/${aggregate.outputTokens}`,
 		`- Totals (not comparable averages) — reported cost (USD): ${aggregate.reportedCostUsd.toFixed(6)} across ${aggregate.reportedCostSamples}/${aggregate.runs} results; missing coverage: ${aggregate.missingCostCount}`,
 		`- Totals (not comparable averages) — agent wall time (ms), turns, tool calls: ${aggregate.wallTimeMs.toFixed(0)}/${aggregate.turns}/${aggregate.toolCalls}`,
@@ -854,7 +872,7 @@ export function renderMarkdownReport(
 		"",
 		"## Interpretation",
 		"",
-		"Rows report per-run means; p50/p95 use the selected run's individual results. Every incident category is shown as an incident total followed by affected runs; rates are run-level rates capped at 100%. Unexpected errors are command, API, other tool, and infrastructure errors combined; expected errors are reported separately. Totals above are sums and are not comparable averages. Agent wall time excludes the optional judge. A missing provider cost is counted as missing rather than zero. Policy incidents are audit findings and do not override correctness; hard safety violations do override correctness, as do true infrastructure failures. Deterministic grading requires condition-appropriate tool use, the task minimum call count, every required fact in the final answer, and linked non-error tool-result evidence (with expected not-found tool errors allowed for the not-found task).",
+		"Rows report per-run means; p50/p95 use the selected run's individual results. Judge agreement compares deterministic pass/fail with passed/failed judge results and excludes skipped/error judge results. Every incident category is shown as an incident total followed by affected runs; rates are run-level rates capped at 100%. Unexpected errors are command, API, other tool, and infrastructure errors combined; expected errors are reported separately. Totals above are sums and are not comparable averages. Agent wall time excludes the optional judge. A missing provider cost is counted as missing rather than zero. Policy incidents are audit findings and do not override correctness; hard safety violations do override correctness, as do true infrastructure failures. Deterministic grading requires condition-appropriate tool use, the task minimum call count, every required fact in the final answer, and linked non-error tool-result evidence (with expected not-found tool errors allowed for the not-found task).",
 		"",
 	];
 	return lines.join("\n");
@@ -870,6 +888,9 @@ const csvColumns = [
 	"deterministic_passes",
 	"llm_passes",
 	"llm_considered",
+	"judge_agreement",
+	"judge_agreement_considered",
+	"judge_agreement_rate",
 	"safety_violations",
 	"unsafe_runs",
 	"safety_rate",
@@ -929,6 +950,9 @@ function csvRow(row: AggregateRow): string {
 		row.deterministicPassed,
 		row.llmPassed,
 		row.llmConsidered,
+		row.judgeAgreement,
+		row.judgeAgreementConsidered,
+		row.judgeAgreementRate.toFixed(6),
 		row.safetyViolations,
 		row.unsafeRuns,
 		row.safetyRate.toFixed(6),
