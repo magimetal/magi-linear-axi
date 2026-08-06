@@ -66,30 +66,42 @@ function parsedStream(binary = "/tmp/bin/magi-linear-axi"): ParsedClaudeStream {
 }
 
 describe("benchmark case isolation and cohorts", () => {
-  it("builds the exact bounded AXI parity guide and keeps MCP typed", () => {
+  it("uses compressed AXI guidance with recorded prompt estimates and keeps MCP typed", () => {
     const binary = "/tmp/bin/magi-linear-axi";
     const axiPrompt = buildTaskPrompt(task, "axi", binary);
+    expect(axiPrompt.split(binary)).toHaveLength(2);
     for (const read of [
-      `${binary} issue view <IDENTIFIER>`,
-      `${binary} issue query --search=<TEXT>`,
-      `${binary} issue comment list <IDENTIFIER>`,
-      `${binary} issue relation list <IDENTIFIER>`,
-      `${binary} project view <PROJECT_ID>`,
-      `${binary} --help`,
+      "issue view <IDENTIFIER>",
+      "issue query --search=<TEXT>",
+      "issue comment list <IDENTIFIER>",
+      "issue relation list <IDENTIFIER>",
+      "project view <PROJECT_ID>",
     ]) {
       expect(axiPrompt).toContain(read);
     }
-    expect(axiPrompt).toContain("exactly one invocation");
-    expect(axiPrompt).toContain("unambiguous --search=<TEXT>");
+    expect(axiPrompt).toContain("exactly one");
+    expect(axiPrompt).toContain("credential broker");
+    expect(axiPrompt).toContain("--search=<TEXT>");
+    expect(axiPrompt).not.toContain("--help");
     expect(axiPrompt).not.toContain("team id <TEAM_ID>");
     expect(axiPrompt).toContain("2>&1");
     expect(axiPrompt).toContain("pipelines");
     expect(axiPrompt).toContain("substitutions");
     expect(axiPrompt).toContain("line continuations");
     expect(axiPrompt).not.toContain(`${binary} issue create`);
+    // Benchmark metadata: fixture chars and heuristic chars/4 token estimate.
+    expect({ characters: axiPrompt.length, estimatedTokens: Math.ceil(axiPrompt.length / 4) })
+      .toEqual({ characters: 935, estimatedTokens: 234 });
+    expect(axiPrompt.length).toBeLessThan(1_383 * 0.8);
     const mcpPrompt = buildTaskPrompt(task, "mcp", binary);
-    expect(mcpPrompt).toContain("read-only Linear MCP typed tools");
-    expect(mcpPrompt).toContain("never use Bash");
+    expect(mcpPrompt).toBe([
+      "You are completing a production benchmark of read-only Linear access.",
+      "Use only the configured read-only Linear MCP typed tools; never use Bash, shell commands, raw GraphQL, or any other tool.",
+      "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For search→view tasks, search with the exact full title and then view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
+      "Treat identifiers and values in angle brackets as data. Answer concisely from tool output; do not guess.",
+      "Task: Read the issue.",
+    ].join("\n"));
+    expect(mcpPrompt.length).toBe(607);
   });
 
   it("hashes source inputs deterministically while excluding live artifacts", async () => {
