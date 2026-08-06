@@ -130,6 +130,35 @@ describe("report aggregation", () => {
     ], aggregate)).toContain("do not override correctness");
   });
 
+  it("keeps zero-duration component samples covered and missing samples absent", () => {
+    const aggregate = aggregateResults([
+      result({
+        componentTiming: {
+          graphqlAttemptMs: { totalMs: 0, count: 1 },
+          claudeProcessLifetimeMs: { totalMs: 50, count: 1 },
+          retries: 0,
+          coverage: ["graphqlAttemptMs", "claudeProcessLifetimeMs", "retries"],
+        },
+      }),
+      result({ resultId: "result-2", repeatIndex: 2 }),
+    ]);
+    expect(aggregate.componentTimings.graphqlAttemptMs).toEqual({
+      totalMs: 0,
+      eventCount: 1,
+      coveredRuns: 1,
+      meanMs: 0,
+    });
+    expect(aggregate.componentTimings.claudeProcessLifetimeMs.meanMs).toBe(50);
+    expect(aggregate.retryCoveredRuns).toBe(1);
+    expect(aggregate.meanRetries).toBe(0);
+    const markdown = renderMarkdownReport([], aggregate);
+    const csv = renderCsvReport(aggregate);
+    expect(markdown).toContain("graphqlAttemptMs | 0 | 0 | 1/2 | 1");
+    expect(csv).toContain("graphql_attempt_ms_covered_runs");
+    expect(markdown).not.toContain("secret dynamic answer");
+    expect(csv).not.toContain("secret dynamic answer");
+  });
+
   it("treats missing new counters as zero for legacy result rows", () => {
     const legacy = { ...result() };
     delete legacy.expectedErrorCount;

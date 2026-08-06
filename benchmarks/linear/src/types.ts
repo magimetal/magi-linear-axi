@@ -148,6 +148,40 @@ export interface ClaudeUsage {
   reportedCostUsd?: number;
 }
 
+export const MAX_COMPONENT_TIMING_MS = 60 * 60 * 1000;
+export const MAX_COMPONENT_EVENT_COUNT = 10_000;
+
+export interface TimingMetric {
+  totalMs: number;
+  count: number;
+}
+
+export const COMPONENT_TIMING_METRIC_KEYS = [
+  "claudeReportedDurationMs",
+  "claudeProcessLifetimeMs",
+  "brokerSetupMs",
+  "wrapperRoundTripMs",
+  "axiChildLifetimeMs",
+  "graphqlAttemptMs",
+  "renderMs",
+  "streamParseMs",
+  "orchestrationOutsidePrimaryMs",
+] as const;
+export type ComponentTimingMetricKey = (typeof COMPONENT_TIMING_METRIC_KEYS)[number];
+export type ComponentTimingKey = ComponentTimingMetricKey | "retries";
+export interface ComponentTiming {
+  claudeReportedDurationMs?: TimingMetric;
+  claudeProcessLifetimeMs?: TimingMetric;
+  brokerSetupMs?: TimingMetric;
+  wrapperRoundTripMs?: TimingMetric;
+  axiChildLifetimeMs?: TimingMetric;
+  graphqlAttemptMs?: TimingMetric;
+  renderMs?: TimingMetric;
+  streamParseMs?: TimingMetric;
+  retries?: number;
+  coverage: ComponentTimingKey[];
+  orchestrationOutsidePrimaryMs?: TimingMetric;
+}
 export type TerminalResultStatus = "success" | "non_success" | "missing";
 
 export interface ParsedClaudeStream {
@@ -236,6 +270,8 @@ export interface BenchmarkResult {
   /** Agent/interface execution time; judge execution and judge artifact writes are excluded. */
   wallTimeMs: number;
   judgeWallTimeMs?: number;
+  /** Bounded component timings; no prompts, answers, workspace facts, or credentials. */
+  componentTiming?: ComponentTiming;
   orchestrationWallTimeMs?: number;
   benchmarkSeed: string;
   snapshotTimestamp: string;

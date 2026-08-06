@@ -33,6 +33,7 @@ import { appendResult } from "./report.js";
 import { redactSecrets, scanAudit } from "./safety.js";
 import { parseSnapshot } from "./snapshot.js";
 import { generateTasks, parseTaskManifest } from "./tasks.js";
+import { MAX_COMPONENT_EVENT_COUNT, MAX_COMPONENT_TIMING_MS } from "./types.js";
 import type {
   BenchmarkPaths,
   BenchmarkResult,
@@ -42,6 +43,8 @@ import type {
   LlmGrade,
   ParsedClaudeStream,
   TaskManifest,
+  ComponentTiming,
+  TimingMetric,
 } from "./types.js";
 
 export interface BenchmarkInputs {
@@ -71,6 +74,8 @@ export interface RunCaseOptions {
   axiBin?: string;
   timeoutMs?: number;
   apiKey: string;
+  /** Loopback HTTP is accepted only for hermetic benchmark tests. */
+  endpoint?: string;
   harnessCommit?: string;
   harnessSourceHash?: string;
   axiBinaryHash?: string;
@@ -368,6 +373,18 @@ export async function getBenchmarkFingerprints(
   return fingerprints;
 }
 
+function measured(totalMs: number, count: number): TimingMetric | undefined {
+  return Number.isInteger(count) && count > 0 && count <= MAX_COMPONENT_EVENT_COUNT &&
+      Number.isFinite(totalMs) && totalMs >= 0 && totalMs <= MAX_COMPONENT_TIMING_MS
+    ? { totalMs, count }
+    : undefined;
+}
+
+function validDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 &&
+    value <= MAX_COMPONENT_TIMING_MS;
+}
+
 export async function runBenchmarkCase(options: RunCaseOptions): Promise<BenchmarkResult> {
   const orchestrationStart = performance.now();
   const startedAtDate = new Date();
@@ -396,8 +413,11 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
   const judge = options.judge ?? runJudge;
   const workspace = await mkdtemp(join(tmpdir(), "linear-benchmark-case-"));
   const xdgConfigHome = join(workspace, "xdg-config");
+  const timingFile = join(workspace, "timing.jsonl");
+  const endpoint = options.endpoint ?? LINEAR_GRAPHQL_ENDPOINT;
   const benchmarkStart = performance.now();
   let benchmarkWallTimeMs = 0;
+  let brokerSetupMs: number | undefined;
   let judgeWallTimeMs: number | undefined;
   let mcpConfig: Awaited<ReturnType<typeof createMcpConfig>> | undefined;
   let axiBroker: AxiBrokerHandle | undefined;
@@ -410,15 +430,18 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
     };
     try {
       await mkdir(xdgConfigHome, { recursive: true, mode: 0o700 });
+      const brokerStarted = performance.now();
       if (options.condition === "axi") {
         axiBroker = await createAxiBroker({
           apiKey: options.apiKey,
           axiBin,
-          endpoint: LINEAR_GRAPHQL_ENDPOINT,
+          endpoint,
           xdgConfigHome,
           cwd: workspace,
           environment: process.env,
+          timingFile,
         });
+        brokerSetupMs = performance.now() - brokerStarted;
         exposedAxiBin = axiBroker.wrapperPath;
       }
       mcpConfig = options.condition === "mcp"
@@ -434,7 +457,7 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
         cwd: workspace,
         environment: {
           ...(options.condition === "mcp" ? { LINEAR_API_KEY: options.apiKey } : {}),
-          LINEAR_API_URL: LINEAR_GRAPHQL_ENDPOINT,
+          LINEAR_API_URL: endpoint,
           XDG_CONFIG_HOME: xdgConfigHome,
           ...(process.env.HOME !== undefined ? { HOME: process.env.HOME } : {}),
         },
@@ -457,6 +480,32 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
       mcpConfig = undefined;
     }
     benchmarkWallTimeMs = Math.round(performance.now() - benchmarkStart);
+    let graphqlAttemptMs = 0;
+    let graphqlAttemptCount = 0;
+    let renderMs = 0;
+    let renderCount = 0;
+    let retries = 0;
+    let retryCovered = false;
+    try {
+      const events = (await readFile(timingFile, "utf8")).split("\n").filter(Boolean);
+      for (const line of events) {
+        try {
+          const event = JSON.parse(line) as { component?: unknown; durationMs?: unknown };
+          if (!validDuration(event.durationMs)) continue;
+          if (event.component === "graphqlAttempt") {
+            graphqlAttemptMs += event.durationMs;
+            graphqlAttemptCount += 1;
+            retryCovered = true;
+          } else if (event.component === "graphqlRetry") {
+            retries += 1;
+            retryCovered = true;
+          } else if (event.component === "render") {
+            renderMs += event.durationMs;
+            renderCount += 1;
+          }
+        } catch { /* Ignore malformed optional telemetry lines. */ }
+      }
+    } catch { /* Missing telemetry remains uncovered, never zero-filled. */ }
 
     const audit = scanAudit(options.condition, execution.parsed.toolCalls, exposedAxiBin);
     const deterministicGrade = gradeDeterministically(
@@ -502,6 +551,33 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
     await writeFile(rawFile, redactSecrets(execution.stdout, [options.apiKey]), { mode: 0o600 });
     const completedAtDate = new Date();
     const orchestrationWallTimeMs = Math.round(performance.now() - orchestrationStart);
+    const orchestrationOutsidePrimaryMs = Math.max(
+      0,
+      orchestrationWallTimeMs - benchmarkWallTimeMs - (judgeWallTimeMs ?? 0),
+    );
+    const coverage: ComponentTiming["coverage"] = [];
+    const componentTiming: ComponentTiming = { coverage };
+    const add = (
+      key: Exclude<keyof ComponentTiming, "coverage" | "retries">,
+      metric: TimingMetric | undefined,
+    ): void => {
+      if (!metric) return;
+      (componentTiming as unknown as Record<string, unknown>)[key] = metric;
+      coverage.push(key);
+    };
+    add("claudeReportedDurationMs", measured(execution.parsed.durationMs ?? 0, execution.parsed.durationMs === undefined ? 0 : 1));
+    add("claudeProcessLifetimeMs", measured(execution.claudeProcessLifetimeMs ?? 0, execution.claudeProcessLifetimeMs === undefined ? 0 : 1));
+    add("brokerSetupMs", measured(brokerSetupMs ?? 0, brokerSetupMs === undefined ? 0 : 1));
+    add("wrapperRoundTripMs", measured(axiBroker?.timing.wrapperRoundTripMs ?? 0, axiBroker?.timing.wrapperRoundTripCount ?? 0));
+    add("axiChildLifetimeMs", measured(axiBroker?.timing.axiChildMs ?? 0, axiBroker?.timing.axiChildCount ?? 0));
+    add("graphqlAttemptMs", measured(graphqlAttemptMs, graphqlAttemptCount));
+    add("renderMs", measured(renderMs, renderCount));
+    add("streamParseMs", measured(execution.streamParseMs ?? 0, execution.streamParseMs === undefined ? 0 : 1));
+    add("orchestrationOutsidePrimaryMs", measured(orchestrationOutsidePrimaryMs, 1));
+    if (retryCovered) {
+      componentTiming.retries = retries;
+      coverage.push("retries");
+    }
     const result: BenchmarkResult = {
       resultId,
       matrixRunId,
@@ -517,6 +593,7 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
       judgeEnabled: cohort.judgeEnabled,
       timestamp: startedAtDate.toISOString(),
       startedAt: startedAtDate.toISOString(),
+      componentTiming,
       completedAt: completedAtDate.toISOString(),
       wallTimeMs: benchmarkWallTimeMs,
       ...(judgeWallTimeMs !== undefined ? { judgeWallTimeMs } : {}),

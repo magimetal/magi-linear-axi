@@ -1,11 +1,13 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { COMPONENT_TIMING_METRIC_KEYS, MAX_COMPONENT_EVENT_COUNT, MAX_COMPONENT_TIMING_MS } from "./types.js";
 import type {
 	BenchmarkResult,
 	CohortMetadata,
 	Condition,
 	ResultFilters,
 	TaskCategory,
+	ComponentTimingMetricKey,
 } from "./types.js";
 
 export interface AggregateRow {
@@ -60,6 +62,10 @@ export interface AggregateRow {
 	reportedCostSamples: number;
 	missingCostCount: number;
 	wallTimeMs: number;
+	componentTimings: Record<ComponentTimingMetricKey, ComponentTimingAggregate>;
+	retries: number;
+	retryCoveredRuns: number;
+	meanRetries?: number;
 	turns: number;
 	toolCalls: number;
 	meanInputTokens: number;
@@ -75,6 +81,13 @@ export interface AggregateRow {
 	p50ToolCalls: number;
 	p95ToolCalls: number;
 	passRate: number;
+}
+
+export interface ComponentTimingAggregate {
+	totalMs: number;
+	eventCount: number;
+	coveredRuns: number;
+	meanMs?: number;
 }
 
 export type ReportAggregate = Omit<AggregateRow, "key"> & {
@@ -116,6 +129,9 @@ interface Totals {
 	wallTimeMs: number;
 	turns: number;
 	toolCalls: number;
+	componentTimings: Record<ComponentTimingMetricKey, ComponentTimingAggregate>;
+	retries: number;
+	retryCoveredRuns: number;
 	durations: number[];
 	toolCallValues: number[];
 }
@@ -157,6 +173,11 @@ function newTotals(): Totals {
 		reportedCostSamples: 0,
 		missingCostCount: 0,
 		wallTimeMs: 0,
+		componentTimings: Object.fromEntries(
+			COMPONENT_TIMING_METRIC_KEYS.map((key) => [key, { totalMs: 0, eventCount: 0, coveredRuns: 0 }]),
+		) as Record<ComponentTimingMetricKey, ComponentTimingAggregate>,
+		retries: 0,
+		retryCoveredRuns: 0,
 		turns: 0,
 		toolCalls: 0,
 		durations: [],
@@ -224,6 +245,23 @@ function addResult(totals: Totals, result: BenchmarkResult): void {
 		totals.missingCostCount += 1;
 	}
 	totals.wallTimeMs += numeric(result.wallTimeMs);
+	for (const key of COMPONENT_TIMING_METRIC_KEYS) {
+		const metric = result.componentTiming?.[key];
+		if (metric && Number.isFinite(metric.totalMs) && metric.totalMs >= 0 &&
+			metric.totalMs <= MAX_COMPONENT_TIMING_MS && Number.isInteger(metric.count) &&
+			metric.count > 0 && metric.count <= MAX_COMPONENT_EVENT_COUNT) {
+			const aggregate = totals.componentTimings[key];
+			aggregate.totalMs += metric.totalMs;
+			aggregate.eventCount += metric.count;
+			aggregate.coveredRuns += 1;
+		}
+	}
+	if (result.componentTiming?.coverage.includes("retries") &&
+		Number.isInteger(result.componentTiming.retries) &&
+		(result.componentTiming.retries ?? -1) >= 0) {
+		totals.retries += result.componentTiming.retries ?? 0;
+		totals.retryCoveredRuns += 1;
+	}
 	totals.turns += numeric(result.turns);
 	totals.toolCalls += numeric(result.toolCalls);
 	totals.durations.push(numeric(result.wallTimeMs));
@@ -305,6 +343,18 @@ function finishRow(
 		wallTimeMs: totals.wallTimeMs,
 		turns: totals.turns,
 		toolCalls: totals.toolCalls,
+		componentTimings: Object.fromEntries(
+			COMPONENT_TIMING_METRIC_KEYS.map((key) => {
+				const metric = totals.componentTimings[key];
+				return [key, {
+					...metric,
+					...(metric.coveredRuns > 0 ? { meanMs: metric.totalMs / metric.coveredRuns } : {}),
+				}];
+			}),
+		) as Record<ComponentTimingMetricKey, ComponentTimingAggregate>,
+		retries: totals.retries,
+		retryCoveredRuns: totals.retryCoveredRuns,
+		...(totals.retryCoveredRuns > 0 ? { meanRetries: totals.retries / totals.retryCoveredRuns } : {}),
 		meanInputTokens: mean(totals.inputTokens, totals.runs),
 		meanCacheReadInputTokens: mean(totals.cacheReadInputTokens, totals.runs),
 		meanCacheCreationInputTokens: mean(
@@ -753,6 +803,16 @@ function rowMarkdown(row: AggregateRow): string {
 	return `| ${row.key} | ${row.runs} | ${row.passed} | ${percent(row.passRate)} | ${row.deterministicPassed} | ${row.llmPassed}/${row.llmConsidered} | ${row.judgeAgreement}/${row.judgeAgreementConsidered} (${percent(row.judgeAgreementRate)}) | ${incidentCell(row.safetyViolations, row.unsafeRuns, row.safetyRate)} | ${incidentCell(row.policyIncidents, row.policyIncidentRuns, row.policyIncidentRate)} | ${incidentCell(row.commandErrors, row.commandErrorRuns, row.commandErrorRate)} | ${incidentCell(row.apiErrors, row.apiErrorRuns, row.apiErrorRate)} | ${incidentCell(row.otherToolErrors, row.otherToolErrorRuns, row.otherToolErrorRate)} | ${incidentCell(row.infrastructureErrors, row.infrastructureErrorRuns, row.infrastructureErrorRate)} | ${incidentCell(row.expectedErrors, row.expectedErrorRuns, row.expectedErrorRate)} | ${incidentCell(row.errors, row.errorRuns, row.errorRate)} | ${fixed(row.meanInputTokens)} | ${fixed(row.meanCacheReadInputTokens)} | ${fixed(row.meanCacheCreationInputTokens)} | ${fixed(row.meanOutputTokens)} | ${costMean(row)} (${row.reportedCostSamples}/${row.runs}) | ${fixed(row.meanWallTimeMs)} | ${fixed(row.p50WallTimeMs)}/${fixed(row.p95WallTimeMs)} | ${fixed(row.meanTurns)} | ${fixed(row.meanToolCalls)} | ${fixed(row.p50ToolCalls)}/${fixed(row.p95ToolCalls)} |`;
 }
 
+function componentMarkdownRows(rows: readonly AggregateRow[]): string[] {
+	return rows.flatMap((row) => [
+		...COMPONENT_TIMING_METRIC_KEYS.map((key) => {
+			const metric = row.componentTimings[key];
+			return `| ${row.key} | ${key} | ${fixed(metric.totalMs)} | ${metric.meanMs === undefined ? "n/a" : fixed(metric.meanMs)} | ${metric.coveredRuns}/${row.runs} | ${metric.eventCount} |`;
+		}),
+		`| ${row.key} | retries | ${row.retries} | ${row.meanRetries === undefined ? "n/a" : fixed(row.meanRetries)} | ${row.retryCoveredRuns}/${row.runs} | n/a |`,
+	]);
+}
+
 export interface ReportMetadata {
 	matrixRunIds: string[];
 	benchmarkSeeds: string[];
@@ -827,8 +887,7 @@ export function renderMarkdownReport(
 	metadata = metadataFromResults(results),
 	selectedMatrixRunId?: string,
 ): string {
-	const selected =
-		selectedMatrixRunId ??
+	const selected = selectedMatrixRunId ??
 		(metadata.matrixRunIds.length === 1 ? metadata.matrixRunIds[0] : undefined);
 	const lines = [
 		"# Linear read-only benchmark report",
@@ -844,7 +903,9 @@ export function renderMarkdownReport(
 		`- Totals (not comparable averages) — input/cache/output tokens: ${aggregate.inputTokens}/${aggregate.cacheReadInputTokens + aggregate.cacheCreationInputTokens}/${aggregate.outputTokens}`,
 		`- Totals (not comparable averages) — reported cost (USD): ${aggregate.reportedCostUsd.toFixed(6)} across ${aggregate.reportedCostSamples}/${aggregate.runs} results; missing coverage: ${aggregate.missingCostCount}`,
 		`- Totals (not comparable averages) — agent wall time (ms), turns, tool calls: ${aggregate.wallTimeMs.toFixed(0)}/${aggregate.turns}/${aggregate.toolCalls}`,
-		"- Agent wall time measures benchmark agent/interface execution only; judge execution and judge artifact writes are excluded.",
+		`- Retries: ${aggregate.retries} across ${aggregate.retryCoveredRuns}/${aggregate.runs} covered results.`,
+		"- Agent wall time preserves benchmark agent/interface execution semantics; judge execution and judge artifact writes are excluded.",
+		"- Component intervals overlap and must not be summed as a wall-time decomposition. Missing measurements remain uncovered rather than becoming zero latency.",
 		`- Model(s): ${metadata.models.join(", ") || "unknown"}`,
 		`- Grading mode(s): ${metadata.gradingModes.join(", ") || "unknown"}`,
 		`- Benchmark seed(s): ${metadata.benchmarkSeeds.join(", ") || "unknown"}`,
@@ -863,6 +924,12 @@ export function renderMarkdownReport(
 		...aggregate.byCondition.map(rowMarkdown),
 		...(aggregate.byCondition.length === 0 ? [emptyMarkdownRow] : []),
 		"",
+		"## Component timing by condition",
+		"",
+		"| Condition | Component | Total ms/count | Mean ms per covered run | Covered/runs | Events |",
+		"| --- | --- | ---: | ---: | ---: | ---: |",
+		...componentMarkdownRows(aggregate.byCondition),
+		"",
 		"## Per task and condition (per-run means)",
 		"",
 		markdownHeader,
@@ -872,10 +939,14 @@ export function renderMarkdownReport(
 		"",
 		"## Interpretation",
 		"",
-		"Rows report per-run means; p50/p95 use the selected run's individual results. Judge agreement compares deterministic pass/fail with passed/failed judge results and excludes skipped/error judge results. Every incident category is shown as an incident total followed by affected runs; rates are run-level rates capped at 100%. Unexpected errors are command, API, other tool, and infrastructure errors combined; expected errors are reported separately. Totals above are sums and are not comparable averages. Agent wall time excludes the optional judge. A missing provider cost is counted as missing rather than zero. Policy incidents are audit findings and do not override correctness; hard safety violations do override correctness, as do true infrastructure failures. Deterministic grading requires condition-appropriate tool use, the task minimum call count, every required fact in the final answer, and linked non-error tool-result evidence (with expected not-found tool errors allowed for the not-found task).",
+		"Rows report per-run means; p50/p95 use the selected run's individual results. Judge agreement compares deterministic pass/fail with passed/failed judge results and excludes skipped/error judge results. Component means divide by covered runs only; retry totals and coverage stay separate from latency. Every incident category is shown as an incident total followed by affected runs; rates are run-level rates capped at 100%. Unexpected errors are command, API, other tool, and infrastructure errors combined; expected errors are reported separately. Totals above are sums and are not comparable averages. Agent wall time excludes the optional judge. Missing provider cost and component timing remain uncovered rather than becoming zero. Policy incidents are audit findings and do not override correctness; hard safety violations do override correctness, as do true infrastructure failures. Deterministic grading requires condition-appropriate tool use, the task minimum call count, every required fact in the final answer, and linked non-error tool-result evidence (with expected not-found tool errors allowed for the not-found task). Reports contain no per-request content.",
 		"",
 	];
 	return lines.join("\n");
+}
+
+function snakeCase(value: string): string {
+	return value.replace(/[A-Z]/gu, (letter) => `_${letter.toLowerCase()}`);
 }
 
 const csvColumns = [
@@ -932,6 +1003,13 @@ const csvColumns = [
 	"mean_tool_calls",
 	"p50_tool_calls",
 	"p95_tool_calls",
+	...COMPONENT_TIMING_METRIC_KEYS.flatMap((key) => {
+		const prefix = snakeCase(key);
+		return [`${prefix}_total_ms`, `${prefix}_mean_ms`, `${prefix}_covered_runs`, `${prefix}_event_count`];
+	}),
+	"retries",
+	"mean_retries",
+	"retry_covered_runs",
 ];
 
 function csvCell(value: string | number): string {
@@ -996,6 +1074,18 @@ function csvRow(row: AggregateRow): string {
 		row.meanToolCalls.toFixed(6),
 		row.p50ToolCalls.toFixed(3),
 		row.p95ToolCalls.toFixed(3),
+		...COMPONENT_TIMING_METRIC_KEYS.flatMap((key) => {
+			const metric = row.componentTimings[key];
+			return [
+				metric.totalMs.toFixed(3),
+				metric.meanMs === undefined ? "" : metric.meanMs.toFixed(3),
+				metric.coveredRuns,
+				metric.eventCount,
+			];
+		}),
+		row.retries,
+		row.meanRetries === undefined ? "" : row.meanRetries.toFixed(6),
+		row.retryCoveredRuns,
 	]
 		.map(csvCell)
 		.join(",");
