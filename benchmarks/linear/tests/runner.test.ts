@@ -2,6 +2,7 @@ import { chmod, access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  COMPACT_FINAL_ANSWER_CONTRACT,
   buildHelperSubprocessEnvironment,
   buildTaskPrompt,
   getClaudeVersion,
@@ -90,6 +91,20 @@ describe("benchmark case isolation and cohorts", () => {
     const mcpPrompt = buildTaskPrompt(task, "mcp", binary);
     expect(mcpPrompt).toContain("read-only Linear MCP typed tools");
     expect(mcpPrompt).toContain("never use Bash");
+  });
+
+  it("uses the same compact answer contract for every category and condition", () => {
+    const categories = ["single_step", "multi_step", "investigation", "error_recovery"] as const;
+    for (const category of categories) {
+      const categoryTask = { ...task, id: category, category, prompt: `Prompt for ${category}.` };
+      for (const condition of ["axi", "mcp"] as const) {
+        const prompt = buildTaskPrompt(categoryTask, condition, "/tmp/bin/magi-linear-axi");
+        expect(prompt.split(COMPACT_FINAL_ANSWER_CONTRACT)).toHaveLength(2);
+        expect(prompt).toContain(`Task: ${categoryTask.prompt}`);
+        expect(prompt).toContain("explicitly state that the issue was not found");
+        expect(prompt).not.toContain("\\n");
+      }
+    }
   });
 
   it("hashes source inputs deterministically while excluding live artifacts", async () => {
@@ -213,6 +228,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     const directory = await mkdtemp(join(process.cwd(), "linear-runner-test-"));
     temporaryDirectories.push(directory);
     const paths = pathsFor(directory);
+    const longAnswer = `ENG-1\n${"α requested value ".repeat(600)}\nunique-suffix`;
     let observedCwd = "";
     const result = await runBenchmarkCase({
       paths,
@@ -247,7 +263,10 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
         expect(options.environment?.XDG_CONFIG_HOME).toContain(options.cwd);
         expect(options.environment?.XDG_CONFIG_HOME).not.toBe(process.env.XDG_CONFIG_HOME);
         expect(options.environment?.HOME).toBe(process.env.HOME);
-        return { stdout: "", stderr: "", parsed: parsedStream(options.axiBin) };
+        const parsed = parsedStream(options.axiBin);
+        parsed.finalAnswer = longAnswer;
+        parsed.usage.outputTokens = 9_876;
+        return { stdout: "", stderr: "", parsed };
       },
     });
     expect(result.matrixRunId).toBe("cohort-1");
@@ -268,6 +287,10 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     expect(persisted.taskManifestHash).toBe("task-manifest-hash");
     expect(persisted.axiBinaryHash).toBe("fixture-axi-hash");
     expect(persisted.claudeVersion).toBe("Claude fixture 1.0.0");
+    expect(result.finalAnswer).toBe(longAnswer);
+    expect(result.outputTokens).toBe(9_876);
+    expect(persisted.finalAnswer).toBe(longAnswer);
+    expect(persisted.outputTokens).toBe(9_876);
   });
 
   it("measures agent wall time separately from judge and orchestration time", async () => {

@@ -25,6 +25,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 - Anchor crates.io package include patterns to repository root so nested benchmark dependency metadata is excluded.
 
 - Make benchmark task generation honor AXI's shared 240-Unicode-code-point default output limit without slicing facts, omit unrepresentable optional values, and fail clearly when core issue facts cannot be represented. Snapshot capture now persists a required query-only confirmed-absent identifier using at most ten direct probes, propagates probe errors, rejects stale snapshots, and removes bounded-list-only invalid-identifier generation.
+- Add shared condition-neutral compact final-answer benchmark contract, preserve explicit issue-scoped not-found wording, retain long model answers through parsing and persistence, and report deterministic/judge agreement for passed/failed judge results in Markdown and CSV.
 
 ## [0.1.1] - 2026-08-03
 
