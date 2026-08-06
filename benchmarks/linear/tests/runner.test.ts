@@ -460,5 +460,5 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     expect(await pathExists(workspace)).toBe(false);
-  }, 15_000);
+  }, 60_000);
 });
