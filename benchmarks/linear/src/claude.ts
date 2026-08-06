@@ -38,6 +38,8 @@ export interface ClaudeExecution {
 	stderr: string;
 	parsed: ParsedClaudeStream;
 	commandError?: string;
+	claudeProcessLifetimeMs?: number;
+	streamParseMs?: number;
 }
 
 export interface McpConfigHandle {
@@ -568,10 +570,11 @@ export async function executeClaude(
 		options.condition,
 	);
 	const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
+	const processStarted = performance.now();
 	let stdout = "";
 	let stderr = "";
 	let commandError: string | undefined;
-
+	let processDurationMs = 0;
 	let result: { exitCode?: number; signal?: string };
 	try {
 		result = await new Promise<{ exitCode?: number; signal?: string }>(
@@ -653,16 +656,17 @@ export async function executeClaude(
 			},
 		);
 	} catch (error: unknown) {
-		commandError =
-			commandError ??
-			`Claude Code process failed: ${error instanceof Error ? error.message : "unknown error"}`;
+		commandError = `Claude Code process failed: ${error instanceof Error ? error.message : "unknown error"}`;
 		result = {};
 	}
+	processDurationMs = performance.now() - processStarted;
 
 	const secrets = options.redactionSecrets ?? [];
 	stdout = redactSecrets(stdout, secrets);
 	stderr = redactSecrets(stderr, secrets);
+	const parseStarted = performance.now();
 	const parsed = parseClaudeStream(stdout);
+	const streamParseDurationMs = performance.now() - parseStarted;
 	if (result.exitCode !== undefined) {
 		parsed.exitCode = result.exitCode;
 	}
@@ -672,7 +676,14 @@ export async function executeClaude(
 	if (commandError) {
 		parsed.errors.push(commandError);
 	}
-	return { stdout, stderr, parsed, ...(commandError ? { commandError } : {}) };
+	return {
+		stdout,
+		stderr,
+		parsed,
+		claudeProcessLifetimeMs: processDurationMs,
+		streamParseMs: streamParseDurationMs,
+		...(commandError ? { commandError } : {}),
+	};
 }
 
 async function createConfigFile(config: unknown): Promise<McpConfigHandle> {

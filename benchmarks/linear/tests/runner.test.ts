@@ -1,4 +1,6 @@
+import { spawn, execFileSync } from "node:child_process";
 import { chmod, access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -24,6 +26,18 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function runProgram(file: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.once("error", (error) => resolve({ code: 127, stdout, stderr: `${stderr}${error.message}` }));
+    child.once("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+  });
 }
 
 function pathsFor(directory: string): BenchmarkPaths {
@@ -316,4 +330,98 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     expect(result.orchestrationWallTimeMs).toBeGreaterThan(result.wallTimeMs);
     expect((result.orchestrationWallTimeMs ?? 0) - result.wallTimeMs).toBeGreaterThanOrEqual(20);
   });
+
+  it("isolates fake Claude, broker, Rust AXI, and retrying local GraphQL timings", async () => {
+    if (process.platform === "win32") return;
+    const directory = await mkdtemp(join(process.cwd(), "linear-component-timing-test-"));
+    temporaryDirectories.push(directory);
+    const repoRoot = join(process.cwd(), "..", "..");
+    const axiBin = join(repoRoot, "target", "debug", "magi-linear-axi");
+    execFileSync("cargo", ["+1.87.0", "build", "--locked"], { cwd: repoRoot, stdio: "ignore" });
+    let requestCount = 0;
+    const server = createServer((_request, response) => {
+      requestCount += 1;
+      const status = requestCount === 1 ? 503 : 200;
+      const body = status === 503
+        ? "temporary"
+        : JSON.stringify({ data: { issue: { identifier: "ENG-1", title: "Latency", url: "https://linear.app/example/ENG-1" } } });
+      response.writeHead(status, { "Content-Type": status === 200 ? "application/json" : "text/plain" });
+      response.end(body);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("local GraphQL mock has no TCP address");
+    const endpoint = `http://127.0.0.1:${address.port}/graphql`;
+    let workspace = "";
+    try {
+      const paths = { ...pathsFor(directory), repoRoot };
+      const result = await runBenchmarkCase({
+        paths,
+        inputs: {
+          snapshotGeneratedAt: "2026-08-05T12:00:00.000Z",
+          snapshotHash: "snapshot-hash",
+          taskManifestHash: "task-manifest-hash",
+          tasks: [task],
+          warnings: [],
+        },
+        task,
+        condition: "axi",
+        repeatIndex: 1,
+        benchmarkSeed: "seed",
+        matrixRunId: "component-timing-cohort",
+        model: "fake-claude",
+        judgeModel: "unused",
+        useJudge: false,
+        axiBin,
+        endpoint,
+        apiKey: "component-timing-secret",
+        harnessSourceHash: "fixture-source-hash",
+        axiBinaryHash: "fixture-axi-hash",
+        claudeVersion: "fake Claude 1.0",
+        execute: async (options) => {
+          workspace = options.cwd;
+          const wrapper = options.axiBin ?? "";
+          const invocation = await runProgram(wrapper, ["--format", "json", "issue", "view", "ENG-1"]);
+          expect(invocation.code).toBe(0);
+          expect(invocation.stderr).toContain("retrying Linear request");
+          const timingText = await readFile(join(options.cwd, "timing.jsonl"), "utf8");
+          expect(timingText).not.toContain("component-timing-secret");
+          expect(timingText).not.toContain("ENG-1");
+          expect(timingText).not.toContain(endpoint);
+          for (const line of timingText.trim().split("\n")) {
+            const event = JSON.parse(line) as Record<string, unknown>;
+            expect(Object.keys(event).sort()).toEqual(["component", "durationMs"]);
+            expect(event.durationMs).toEqual(expect.any(Number));
+          }
+          return {
+            stdout: "fake Claude stream",
+            stderr: "",
+            parsed: { ...parsedStream(wrapper), durationMs: 123 },
+            claudeProcessLifetimeMs: 150,
+            streamParseMs: 2,
+          };
+        },
+      });
+      expect(requestCount).toBe(2);
+      expect(result.componentTiming).toMatchObject({
+        claudeReportedDurationMs: { totalMs: 123, count: 1 },
+        claudeProcessLifetimeMs: { totalMs: 150, count: 1 },
+        graphqlAttemptMs: { count: 2 },
+        renderMs: { count: 1 },
+        wrapperRoundTripMs: { count: 1 },
+        axiChildLifetimeMs: { count: 1 },
+        retries: 1,
+      });
+      expect(result.componentTiming?.coverage).toEqual(expect.arrayContaining([
+        "brokerSetupMs", "graphqlAttemptMs", "renderMs", "retries", "orchestrationOutsidePrimaryMs",
+      ]));
+      const persisted = await readFile(paths.resultsFile, "utf8");
+      expect(persisted).not.toContain("component-timing-secret");
+      expect(persisted).not.toContain(endpoint);
+      expect(JSON.stringify(result.componentTiming)).not.toContain("ENG-1");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(await pathExists(workspace)).toBe(false);
+  }, 15_000);
 });

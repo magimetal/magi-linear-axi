@@ -109,6 +109,11 @@ describe("pre-execution AXI credential broker", () => {
 				expect(rejected.stderr).toMatch(/AXI|endpoint|raw|unknown|disallowed/u);
 			}
 			expect(await readFile(observed, "utf8")).toBe("");
+			expect(broker.timing.wrapperRoundTripCount).toBe(7);
+			expect(broker.timing.axiChildCount).toBe(2);
+			expect(broker.timing.wrapperRoundTripMs).toBeGreaterThanOrEqual(
+				broker.timing.axiChildMs,
+			);
 		} finally {
 			await broker.cleanup();
 		}

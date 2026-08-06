@@ -1,5 +1,22 @@
 use crate::error::AppError;
 use serde_json::Value;
+use std::{fs::OpenOptions, io::Write, time::Instant};
+
+fn timing_event(duration_ms: u128) {
+    let Some(path) = std::env::var_os("MAGI_LINEAR_TIMING_FILE") else {
+        return;
+    };
+    let Ok(duration_ms) = u64::try_from(duration_ms) else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "{{\"component\":\"render\",\"durationMs\":{duration_ms}}}"
+    );
+}
 
 /// Maximum Unicode code points rendered for a string in default output.
 pub const AXI_OUTPUT_MAX_UNICODE_CODE_POINTS: usize = 240;
@@ -13,6 +30,12 @@ impl Output {
         Self { format, full }
     }
     pub fn render(&self, v: &Value) -> Result<(), AppError> {
+        let started = Instant::now();
+        let result = self.render_timed(v);
+        timing_event(started.elapsed().as_millis());
+        result
+    }
+    fn render_timed(&self, v: &Value) -> Result<(), AppError> {
         let value = if self.full {
             v.clone()
         } else {

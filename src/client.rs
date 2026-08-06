@@ -1,7 +1,36 @@
 use crate::error::AppError;
 use serde_json::{Value, json};
-use std::{io::Read, thread, time::Duration};
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+    thread,
+    time::{Duration, Instant},
+};
 use ureq::Agent;
+
+fn timing_event(component: &str, duration_ms: u128) {
+    let Some(path) = std::env::var_os("MAGI_LINEAR_TIMING_FILE") else {
+        return;
+    };
+    let label = match component {
+        "graphqlAttempt" | "graphqlRetry" => component,
+        _ => return,
+    };
+    let Ok(duration_ms) = u64::try_from(duration_ms) else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "{{\"component\":\"{label}\",\"durationMs\":{duration_ms}}}"
+    );
+}
+
+fn retry_event() {
+    timing_event("graphqlRetry", 0);
+}
 
 const RESPONSE_PREVIEW_LIMIT: usize = 512;
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
@@ -20,6 +49,7 @@ struct HttpFailure {
     detail: String,
     transient: bool,
 }
+
 #[derive(Debug, Clone)]
 pub struct LinearClient {
     endpoint: String,
@@ -82,6 +112,7 @@ impl LinearClient {
                     return Ok(value.get("data").cloned().unwrap_or(value));
                 }
                 Err(failure) if attempt < MAX_ATTEMPTS && should_retry(&failure, operation) => {
+                    retry_event();
                     let status = failure
                         .status
                         .map_or_else(|| "connection failure".into(), |s| format!("HTTP {s}"));
@@ -102,6 +133,13 @@ impl LinearClient {
     }
 
     fn send(&self, body: &Value) -> Result<Value, HttpFailure> {
+        let started = Instant::now();
+        let result = self.send_timed(body);
+        timing_event("graphqlAttempt", started.elapsed().as_millis());
+        result
+    }
+
+    fn send_timed(&self, body: &Value) -> Result<Value, HttpFailure> {
         let response = self
             .agent
             .post(&self.endpoint)

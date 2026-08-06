@@ -9,6 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 ### Added
 
 - Add non-destructive, read-only AXI versus official Linear MCP benchmark harness with dynamic workspace tasks, layered mutation guards, grounded grading, paired seeded runs, and cohort-safe reports.
+- Add bounded component latency instrumentation and aggregate coverage reporting for Claude-reported/process time, broker setup, wrapper socket round trips, AXI child lifetime, GraphQL attempts, rendering, stream parsing, retries, and orchestration outside primary wall time. Hermetic fake-Claude/real-AXI/local-GraphQL tests verify retry attribution, isolation, and content-free timing metadata.
 
 ### Security
 

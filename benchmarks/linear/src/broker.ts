@@ -125,7 +125,15 @@ export interface AxiBrokerOptions {
 	xdgConfigHome: string;
 	cwd: string;
 	/** Environment source for non-secret PATH/locale/proxy/certificate values. */
+	timingFile?: string;
 	environment?: NodeJS.ProcessEnv;
+}
+
+export interface BrokerTimingSummary {
+	wrapperRoundTripMs: number;
+	wrapperRoundTripCount: number;
+	axiChildMs: number;
+	axiChildCount: number;
 }
 
 export interface AxiBrokerHandle {
@@ -133,6 +141,7 @@ export interface AxiBrokerHandle {
 	socketPath: string;
 	wrapperPath: string;
 	cleanup: () => Promise<void>;
+	timing: BrokerTimingSummary;
 }
 
 interface BrokerRequest {
@@ -428,6 +437,9 @@ function childEnvironment(options: AxiBrokerOptions): NodeJS.ProcessEnv {
 	environment.LINEAR_API_KEY = options.apiKey;
 	environment.LINEAR_API_URL = options.endpoint ?? LINEAR_GRAPHQL_ENDPOINT;
 	environment.XDG_CONFIG_HOME = options.xdgConfigHome;
+	if (options.timingFile) {
+		environment.MAGI_LINEAR_TIMING_FILE = options.timingFile;
+	}
 	return environment;
 }
 
@@ -439,11 +451,28 @@ function responseJson(response: BrokerResponse): string {
 	return boundedUtf8(JSON.stringify(response), MAX_RESPONSE_BYTES);
 }
 
+function allowedEndpoint(endpoint: string): boolean {
+	if (endpoint === LINEAR_GRAPHQL_ENDPOINT) {
+		return true;
+	}
+	try {
+		const url = new URL(endpoint);
+		return url.protocol === "http:" &&
+			(url.hostname === "127.0.0.1" ||
+				url.hostname === "localhost" ||
+				url.hostname === "[::1]");
+	} catch {
+		return false;
+	}
+}
+
 async function spawnAxi(
 	options: AxiBrokerOptions,
 	argv: string[],
 	activeChildren: Set<ChildProcess>,
+	timing: BrokerTimingSummary,
 ): Promise<BrokerResponse> {
+	const childStarted = performance.now();
 	return new Promise((resolve) => {
 		let child: ChildProcess;
 		try {
@@ -456,7 +485,10 @@ async function spawnAxi(
 		} catch (error: unknown) {
 			resolve({
 				stdout: "",
-				stderr: responseText(error instanceof Error ? error.message : "AXI could not be started", options.apiKey),
+				stderr: responseText(
+					error instanceof Error ? error.message : "AXI could not be started",
+					options.apiKey,
+				),
 				exitCode: 127,
 			});
 			return;
@@ -490,6 +522,8 @@ async function spawnAxi(
 			}
 			settled = true;
 			activeChildren.delete(child);
+			timing.axiChildMs += performance.now() - childStarted;
+			timing.axiChildCount += 1;
 			resolve({
 				stdout: responseText(response.stdout, options.apiKey),
 				stderr: responseText(response.stderr, options.apiKey),
@@ -511,8 +545,12 @@ async function spawnAxi(
 		});
 		child.once("close", (code, signal) => {
 			clearTimeout(timer);
-			const exitCode = code === null ? 1 : code;
-			finish({ stdout, stderr, exitCode, ...(signal ? { signal } : {}) });
+			finish({
+				stdout,
+				stderr,
+				exitCode: code === null ? 1 : code,
+				...(signal ? { signal } : {}),
+			});
 		});
 	});
 }
@@ -623,8 +661,11 @@ export async function createAxiBroker(options: AxiBrokerOptions): Promise<AxiBro
 	if (!options.apiKey.trim()) {
 		throw new Error("AXI credential broker requires a non-empty API key");
 	}
-	if ((options.endpoint ?? LINEAR_GRAPHQL_ENDPOINT) !== LINEAR_GRAPHQL_ENDPOINT) {
-		throw new Error("AXI credential broker endpoint is fixed to the official Linear GraphQL endpoint");
+	const endpoint = options.endpoint ?? LINEAR_GRAPHQL_ENDPOINT;
+	if (!allowedEndpoint(endpoint)) {
+		throw new Error(
+			"AXI credential broker endpoint must be official Linear GraphQL or loopback test HTTP",
+		);
 	}
 	const directory = await mkdtemp(join(tmpdir(), "axi-broker-"));
 	await chmod(directory, 0o700);
@@ -640,19 +681,39 @@ export async function createAxiBroker(options: AxiBrokerOptions): Promise<AxiBro
 
 	const activeChildren = new Set<ChildProcess>();
 	const sockets = new Set<Socket>();
+	const timing: BrokerTimingSummary = {
+		wrapperRoundTripMs: 0,
+		wrapperRoundTripCount: 0,
+		axiChildMs: 0,
+		axiChildCount: 0,
+	};
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
+		const wrapperStarted = performance.now();
 		sockets.add(socket);
 		let chunks: Buffer[] = [];
 		let total = 0;
 		let handled = false;
+		let timingRecorded = false;
+		const sendResponse = (response: BrokerResponse): void => {
+			if (!timingRecorded) {
+				timingRecorded = true;
+				timing.wrapperRoundTripMs += performance.now() - wrapperStarted;
+				timing.wrapperRoundTripCount += 1;
+			}
+			socket.end(responseJson(response));
+		};
 		const rejectSocket = (error: unknown): void => {
 			if (handled) {
 				return;
 			}
 			handled = true;
-			socket.end(responseJson(errorResponse(error, options.apiKey)));
+			sendResponse(errorResponse(error, options.apiKey));
 		};
-		socket.setTimeout(10_000, () => rejectSocket(new AxiBrokerValidationError("AXI broker request timed out")));
+		socket.setTimeout(10_000, () =>
+			rejectSocket(
+				new AxiBrokerValidationError("AXI broker request timed out"),
+			),
+		);
 		socket.on("data", (chunk: Buffer) => {
 			if (handled) {
 				return;
@@ -679,10 +740,10 @@ export async function createAxiBroker(options: AxiBrokerOptions): Promise<AxiBro
 				try {
 					const request = parseRequest(requestText);
 					validateAxiBrokerArgv(request.argv);
-					const response = await spawnAxi(options, request.argv, activeChildren);
-					socket.end(responseJson(response));
+					const response = await spawnAxi(options, request.argv, activeChildren, timing);
+					sendResponse(response);
 				} catch (error: unknown) {
-					socket.end(responseJson(errorResponse(error, options.apiKey)));
+					sendResponse(errorResponse(error, options.apiKey));
 				}
 			})();
 		});
@@ -717,5 +778,6 @@ export async function createAxiBroker(options: AxiBrokerOptions): Promise<AxiBro
 			await closeServer(server);
 			await rm(directory, { recursive: true, force: true });
 		},
+		timing,
 	};
 }
