@@ -1,2 +1,11 @@
 /target
 .DS_Store
+
+# Linear benchmark harness artifacts (raw trajectories and live workspace facts)
+benchmarks/linear/node_modules/
+benchmarks/linear/dist/
+benchmarks/linear/results/
+benchmarks/linear/snapshots/*
+benchmarks/linear/generated/*
+!benchmarks/linear/snapshots/.gitkeep
+!benchmarks/linear/generated/.gitkeep

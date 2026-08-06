@@ -9,6 +9,10 @@ Agent-native Rust CLI for direct, non-interactive Linear GraphQL operations. It 
 
 > **Quick path:** install with Cargo, export `LINEAR_API_KEY`, verify with `auth whoami`, then use modeled resource commands. Default output is compact [TOON](https://toonformat.dev/); use `--format json` when a downstream tool requires JSON.
 
+## Read-only benchmark harness
+
+The isolated Node benchmark under [`benchmarks/linear`](benchmarks/linear) compares this CLI with Linear MCP using dynamic snapshot tasks. Its AXI condition never gives Claude or Bash the Linear key: a runner-owned, mode-0700 Unix-socket broker validates bounded read-only argv and injects the pinned endpoint/key only when spawning the resolved binary. The callable wrapper is key-free and temporary. Pipelines, chaining, command separators, substitutions, line continuations, parentheses, ampersands, and redirection are hard compliance/correctness failures. Snapshot generation uses query-only guards, confirms the persisted invalid identifier with a bounded direct lookup, and keeps generated exact values within AXI's 240-Unicode-code-point default output limit without slicing facts. The harness records an exact task-manifest SHA-256 and requires it to match across every cohort cell. See the benchmark README for the offline test contract and live-command safety gates.
+
 ## Contents
 
 - [Quick start](#quick-start)
@@ -89,7 +93,7 @@ magi-linear-axi project update --help
 - Commands never prompt. Supply identifiers, values, files, and workspace through arguments, flags, stdin, or environment.
 - API-backed success data and application errors go to stdout. Diagnostics, including retry notices, go to stderr.
 - Default structured format is TOON. `--format json` renders API-backed results and post-parse application errors as compact JSON.
-- Strings longer than 240 Unicode characters are recursively truncated and include original character count. `--full` disables truncation.
+- Strings longer than 240 Unicode code points are recursively truncated and include the original code-point count. `--full` disables truncation.
 - Exit `0`: success, explicit empty result, or safe no-op. Exit `1`: authentication, configuration, network, API, or output failure. Exit `2`: command or argument usage failure.
 - Unknown commands and flags fail before authentication or network access.
 - Global options can appear before or after subcommands.
@@ -161,10 +165,10 @@ Issue references accept identifiers such as `ENG-123`. When omitted, relevant co
 | Discover | `issue mine`, `issue list`, `issue query` |
 | Inspect | `issue view`, `title`, `describe`, `url`, `id` |
 | Mutate | `issue create`, `update`, `start`, `delete` |
-| Comments | `issue comment list|add|update|delete` |
+| Comments | `issue comment list \| add \| update \| delete` |
 | Attachments and links | `issue attach`, `issue link` |
-| Relations | `issue relation list|add|delete` |
-| Agent sessions | `issue agent-session list|view` |
+| Relations | `issue relation list \| add \| delete` |
+| Agent sessions | `issue agent-session list \| view` |
 | Local repository helpers | `issue commits`, `issue pull-request` |
 
 ```sh
@@ -370,6 +374,8 @@ cargo +1.87.0 clippy --all-targets --all-features --locked -- -D warnings
 cargo +1.87.0 build --release --locked
 cargo deny check advisories
 ```
+
+Read-only AXI vs official Linear MCP benchmark harness: see [`benchmarks/linear/README.md`](https://github.com/magimetal/magi-linear-axi/tree/main/benchmarks/linear).
 
 Integration tests use local TCP GraphQL mocks, temporary home directories, and fake credentials; they do not require developer Linear access. CI currently validates Ubuntu. Platform-specific URL opening has macOS, Linux, and Windows code paths.
 
