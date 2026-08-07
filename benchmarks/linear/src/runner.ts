@@ -11,7 +11,10 @@ import { boundedToolEvidence, classifyErrors, gradeDeterministically, linkedTool
 import { appendResult } from "./report.js";
 import { redactSecrets, scanAudit } from "./safety.js";
 import { parseSnapshot } from "./snapshot.js";
-import { answerContractPrompt } from "./answer-contract.js";
+import {
+	answerContractPrompt,
+	canonicalAnswerJsonSchema,
+} from "./answer-contract.js";
 import { generateTasks, parseTaskManifest } from "./tasks.js";
 import { MAX_COMPONENT_EVENT_COUNT, MAX_COMPONENT_TIMING_MS } from "./types.js";
 import type {
@@ -105,7 +108,7 @@ export function buildTaskPrompt(
       ].join("\n")
     : [
         "Use only the configured read-only Linear MCP typed tools; never use Bash, shell commands, raw GraphQL, or any other tool.",
-        "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For search→view tasks, search with the exact full title and then view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
+        "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For issue search, call list_issues exactly once with the exact query and limit 1; omit fields. For search→view tasks, view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
       ].join("\n");
 	return [
 		"You are completing a production benchmark of read-only Linear access.",
@@ -376,6 +379,9 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
   const resultId = randomUUID();
   const matrixRunId = options.matrixRunId ?? randomUUID();
   const answerContract = options.answerContract ?? "compact";
+  const jsonSchema = answerContract === "canonical"
+    ? canonicalAnswerJsonSchema(options.task)
+    : undefined;
   const cohort = options.cohort ?? { ...defaultCohort({ ...options, answerContract }) };
   if (cohort.expectedAnswerContracts && !cohort.expectedAnswerContracts.includes(answerContract)) throw new Error("answer contract is not part of cohort");
   if (!options.inputs.taskManifestHash) {
@@ -439,8 +445,9 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
 		axiBin: exposedAxiBin,
 		condition: options.condition,
 		model: options.model,
-        prompt: buildTaskPrompt(options.task, options.condition, exposedAxiBin, answerContract),
-        claudeBin: options.claudeBin ?? DEFAULT_CLAUDE_BIN,
+		prompt: buildTaskPrompt(options.task, options.condition, exposedAxiBin, answerContract),
+		...(jsonSchema !== undefined ? { jsonSchema } : {}),
+		claudeBin: options.claudeBin ?? DEFAULT_CLAUDE_BIN,
         cwd: workspace,
         environment: {
           ...(options.condition === "mcp" ? { LINEAR_API_KEY: options.apiKey } : {}),

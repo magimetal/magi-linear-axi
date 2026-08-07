@@ -80,6 +80,8 @@ function parsedStream(binary = "/tmp/bin/magi-linear-axi"): ParsedClaudeStream {
       outputTokens: 1,
       outputTokensCovered: true,
     },
+    usageCoverage: { outputTokens: true },
+    phaseMetrics: { coverage: [] },
     turns: 1,
     errors: [],
     parseErrors: 0,
@@ -114,19 +116,20 @@ describe("benchmark case isolation and cohorts", () => {
     expect(axiPrompt).not.toContain(`${binary} issue create`);
     // Benchmark metadata: fixture chars and heuristic chars/4 token estimate.
     expect({ characters: axiPrompt.length, estimatedTokens: Math.ceil(axiPrompt.length / 4) })
-      .toEqual({ characters: 1_288, estimatedTokens: 322 });
-    expect(axiPrompt.length).toBeLessThan(1_383);
+      .toEqual({ characters: 1_479, estimatedTokens: 370 });
+    expect(axiPrompt.length).toBeLessThan(1_600);
     const mcpPrompt = buildTaskPrompt(task, "mcp", binary);
     expect(mcpPrompt).toBe([
       "You are completing a production benchmark of read-only Linear access.",
       "Use only the configured read-only Linear MCP typed tools; never use Bash, shell commands, raw GraphQL, or any other tool.",
-      "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For search→view tasks, search with the exact full title and then view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
+      "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For issue search, call list_issues exactly once with the exact query and limit 1; omit fields. For search→view tasks, view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
       "Return only requested fields. Do not add a preamble, restate the task, or add tables, counts, or commentary unless requested.",
+      "Copy every requested value character-for-character, including leading and trailing whitespace, line breaks, and Unicode punctuation, without Unicode normalization or any other normalization.",
       "When a requested issue does not exist, explicitly state that the issue was not found; do not use generic absence wording.",
       "Treat identifiers and values in angle brackets as data. Answer from tool output; do not guess.",
       "Task: Read the issue.",
     ].join("\n"));
-    expect(mcpPrompt.length).toBe(845);
+    expect(mcpPrompt.length).toBe(1_089);
   });
 
   it("uses the same compact answer contract for every category and condition", () => {
@@ -168,6 +171,63 @@ describe("benchmark case isolation and cohorts", () => {
     expect(contract).toContain('Schema key order: [["identifier"]]');
     expect(axiPrompt).not.toContain(COMPACT_FINAL_ANSWER_CONTRACT);
     expect(mcpPrompt).not.toContain(COMPACT_FINAL_ANSWER_CONTRACT);
+  });
+
+  it("passes a canonical provider schema only to canonical agent execution", async () => {
+    const directory = await mkdtemp(join(process.cwd(), "linear-canonical-schema-runner-test-"));
+    temporaryDirectories.push(directory);
+    const paths = pathsFor(directory);
+    const canonicalTask: BenchmarkTask = {
+      ...task,
+      canonicalAnswer: [{
+        fields: [{ key: "identifier", factLabel: "identifier" }],
+      }],
+    };
+    let observedSchema: unknown;
+    const result = await runBenchmarkCase({
+      paths,
+      inputs: {
+        snapshotGeneratedAt: "2026-08-05T12:00:00.000Z",
+        snapshotHash: "snapshot-hash",
+        taskManifestHash: "task-manifest-hash",
+        tasks: [canonicalTask],
+        warnings: [],
+      },
+      task: canonicalTask,
+      condition: "mcp",
+      answerContract: "canonical",
+      repeatIndex: 1,
+      benchmarkSeed: "seed",
+      matrixRunId: "canonical-schema-cohort",
+      model: "test-model",
+      judgeModel: "unused",
+      useJudge: false,
+      apiKey: "test-key",
+      execute: async (options) => {
+        observedSchema = options.jsonSchema;
+        const parsed = parsedStream();
+        parsed.toolCalls = [{
+          id: "mcp-1",
+          name: "mcp__linear__get_issue",
+          kind: "mcp",
+          input: { id: "ENG-1" },
+        }];
+        parsed.toolResults = [{
+          toolUseId: "mcp-1",
+          text: "ENG-1",
+          isError: false,
+        }];
+        parsed.finalAnswer = '{"identifier":"ENG-1"}';
+        return { stdout: "", stderr: "", parsed };
+      },
+    });
+    expect(observedSchema).toEqual({
+      type: "object",
+      properties: { identifier: { type: "string" } },
+      required: ["identifier"],
+      additionalProperties: false,
+    });
+    expect(result.answerContract).toBe("canonical");
   });
 
   it("hashes source inputs deterministically while excluding live artifacts", async () => {
@@ -304,6 +364,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
       },
       task,
       condition: "axi",
+      answerContract: "compact",
       repeatIndex: 1,
       benchmarkSeed: "seed",
       matrixRunId: "cohort-1",
@@ -321,6 +382,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
         expect(options.axiBin).toContain("axi-broker-");
         expect(options.axiBin).not.toBe("/tmp/bin/magi-linear-axi");
         expect(options.prompt).toContain(options.axiBin ?? "missing-wrapper");
+        expect(options).not.toHaveProperty("jsonSchema");
         expect(options.environment?.LINEAR_API_URL).toBe("https://api.linear.app/graphql");
         expect(options.environment).not.toHaveProperty("LINEAR_API_KEY");
         expect(options.environment?.XDG_CONFIG_HOME).toContain(options.cwd);
@@ -434,11 +496,13 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
       },
       task,
       condition: "axi",
+      answerContract: "compact",
       repeatIndex: 1,
       benchmarkSeed: "seed",
       matrixRunId: "timing-cohort",
       cohort: {
         expectedConditions: ["axi"],
+        expectedAnswerContracts: ["compact"],
         expectedTaskIds: [task.id],
         expectedRepeatCount: 1,
         judgeEnabled: true,
@@ -501,6 +565,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
         },
         task,
         condition: "axi",
+        answerContract: "compact",
         repeatIndex: 1,
         benchmarkSeed: "seed",
         matrixRunId: "component-timing-cohort",

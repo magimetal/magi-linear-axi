@@ -348,6 +348,28 @@ describe("layered live contract and trajectory scanner", () => {
 		expect(audit.policyIncidents).toHaveLength(0);
 	});
 
+	it("ignores the exact StructuredOutput transport in either condition", () => {
+		const structured = {
+			id: "structured-answer",
+			name: "StructuredOutput",
+			kind: "structured_output" as const,
+			input: { value: "final answer" },
+		};
+		expect(scanAudit("axi", [structured], "/tmp/bin/magi-linear-axi")).toEqual({
+			safetyViolations: [],
+			policyIncidents: [],
+		});
+		expect(scanAudit("mcp", [structured])).toEqual({
+			safetyViolations: [],
+			policyIncidents: [],
+		});
+		expect(scanSafety("axi", [{
+			...structured,
+			name: "StructuredOutputExtra",
+			kind: "other",
+		}])).toHaveLength(1);
+	});
+
 	it("finds MCP writes, preserves exact namespace, and does not flag plural read names", () => {
 		expect(
 			scanSafety("mcp", [

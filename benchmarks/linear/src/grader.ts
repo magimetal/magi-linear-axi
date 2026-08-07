@@ -75,6 +75,9 @@ export function mentionsNotFound(value: string): boolean {
 export function toolUseCounts(stream: ParsedClaudeStream): ToolUseCounts {
 	return stream.toolCalls.reduce(
 		(counts, call) => {
+			if (call.kind === "structured_output") {
+				return counts;
+			}
 			counts.total += 1;
 			if (call.kind === "bash") {
 				counts.bash += 1;
@@ -99,11 +102,23 @@ function streamToolResults(
 	return stream.toolResults ?? [];
 }
 
+function userToolCalls(stream: ParsedClaudeStream): ParsedToolCall[] {
+	return stream.toolCalls.filter((call) => call.kind !== "structured_output");
+}
+
+function structuredOutputToolIds(stream: ParsedClaudeStream): Set<string> {
+	return new Set(
+		stream.toolCalls.flatMap((call) =>
+			call.kind === "structured_output" && call.id ? [call.id] : [],
+		),
+	);
+}
+
 function linkedResults(
 	stream: ParsedClaudeStream,
 ): Map<string, ParsedClaudeStream["toolResults"]> {
 	const toolIds = new Set(
-		stream.toolCalls.flatMap((call) => (call.id ? [call.id] : [])),
+		userToolCalls(stream).flatMap((call) => (call.id ? [call.id] : [])),
 	);
 	const linked = new Map<string, ParsedClaudeStream["toolResults"]>();
 	for (const result of streamToolResults(stream)) {
@@ -200,10 +215,20 @@ function evidenceForFact(
 	stream: ParsedClaudeStream,
 	source: BenchmarkOperationKind | undefined,
 	operations: readonly ObservedOperation[],
+	answerContract: AnswerContract,
 	emptyFieldKey?: string,
 	emptyEvidencePath?: readonly [string, string],
 ): { grounded: boolean; results: typeof stream.toolResults } {
 	const expected = normalize(value);
+	const serialized = JSON.stringify(value);
+	const escapedExpected = serialized === undefined
+		? value
+		: serialized.slice(1, -1);
+	const matchesValue = (text: string): boolean =>
+		answerContract === "canonical"
+			? text.includes(value) || text.includes(escapedExpected)
+			: (expected.length > 0 && normalize(text).includes(expected)) ||
+				text.includes(escapedExpected);
 	const linked = linkedResults(stream);
 	const candidates = source
 		? operations
@@ -222,7 +247,7 @@ function evidenceForFact(
 						)
 					: emptyFieldKey !== undefined &&
 						explicitlyEmptyField(result.text, emptyFieldKey)
-				: normalize(result.text).includes(expected)),
+				: matchesValue(result.text)),
 	);
 	return { grounded: results.length > 0, results };
 }
@@ -367,12 +392,16 @@ export function classifyErrors(
 	// Older streams can contain the generic parser error without a retained
 	// linked result. Keep it an ordinary tool error, never infrastructure.
 	const linkedErrorCount = linked.filter((result) => result.isError).length;
+	const structuredIds = structuredOutputToolIds(stream);
+	const structuredErrorCount = streamToolResults(stream).filter(
+		(result) => structuredIds.has(result.toolUseId) && result.isError,
+	).length;
 	const genericToolErrorCount = stream.errors.filter(
 		(error) => error === TOOL_ERROR_MESSAGE,
 	).length;
 	counts.toolErrorCount += Math.max(
 		0,
-		genericToolErrorCount - linkedErrorCount,
+		genericToolErrorCount - linkedErrorCount - structuredErrorCount,
 	);
 	return counts;
 }
@@ -411,9 +440,12 @@ export function gradeDeterministically(
 				fact.source,
 				operations,
 			);
+			const answerPassed = answerContract === "canonical"
+				? formatPassed
+				: mentionsNotFound(answer);
 			return {
 				label: fact.label,
-				passed: mentionsNotFound(answer) && grounded,
+				passed: answerPassed && grounded,
 				grounded,
 			};
 		}
@@ -436,12 +468,14 @@ export function gradeDeterministically(
 				stream,
 				fact.source,
 				operations,
+				answerContract,
 				emptyFieldKey,
 				emptyEvidencePath,
 			).grounded;
-		const answerPassed =
-			value.length === 0
-				? answerContract === "canonical" && formatPassed
+		const answerPassed = answerContract === "canonical"
+			? formatPassed
+			: value.length === 0
+				? false
 				: normalize(answer).includes(normalize(value));
 		return {
 			label: fact.label,
@@ -512,14 +546,16 @@ export function boundedToolEvidence(
 	stream: ParsedClaudeStream,
 	secrets: readonly string[] = [],
 ): JudgeToolEvidence {
+	const structuredIds = structuredOutputToolIds(stream);
 	return {
-		calls: stream.toolCalls.slice(0, 32).map((call) => ({
+		calls: userToolCalls(stream).slice(0, 32).map((call) => ({
 			...(call.id ? { id: call.id } : {}),
 			name: call.name.slice(0, 160),
 			kind: call.kind,
 			input: boundedInput(call.input, secrets),
 		})),
 		results: streamToolResults(stream)
+			.filter((result) => !structuredIds.has(result.toolUseId))
 			.slice(0, 32)
 			.map((result) => ({
 				toolUseId: result.toolUseId.slice(0, 160),

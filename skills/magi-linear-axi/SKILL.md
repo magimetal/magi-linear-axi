@@ -34,18 +34,15 @@ magi-linear-axi --workspace acme auth whoami
 
 Workspace precedence: `--workspace` > non-empty `LINEAR_WORKSPACE`; workspace required only for browser-opening commands.
 
-
 ## Issues
 
 Issue argument accepts identifier such as `ENG-123`. When omitted, commands try identifier from current Git branch.
 
 ```sh
-# Discover and inspect
-magi-linear-axi issue list --team ENG --limit 25
-magi-linear-axi issue query --search 'authentication' --state 'In Progress' --label bug
-magi-linear-axi issue mine --state 'In Progress'
-magi-linear-axi issue view ENG-123
-magi-linear-axi issue query --team ENG --fields compact
+# Discover and inspect with compact projections
+magi-linear-axi issue list --team ENG --limit 25 --fields compact
+magi-linear-axi issue query --search='authentication' --state 'In Progress' --label bug --fields compact
+magi-linear-axi issue mine --state 'In Progress' --fields compact
 magi-linear-axi issue view ENG-123 --fields compact
 magi-linear-axi issue title ENG-123
 magi-linear-axi issue describe ENG-123
@@ -58,7 +55,7 @@ magi-linear-axi issue update ENG-123 --title 'Revised title' --description 'Revi
 magi-linear-axi issue update ENG-123 --unassign
 magi-linear-axi issue delete ENG-123
 
-Delete safety: inspect target first and retain identifier, team, and exact title; run one delete mutation; then use a narrowly scoped `issue query --team <KEY> --search '<retained title>'` exclusion check. `success:true` means provider accepted request. Never retry delete after success or ambiguous transport failure. Query exclusion is eventual-consistency evidence, not transactional proof; absence from an unfiltered first page is not definitive. Direct reads may be stale, null, or HTTP error, and provider-controlled tombstone behavior cannot be guaranteed by local tests. Read retries: statuses 500/502/503/504 and no-status transient transport failures, at most 3 attempts with 50ms then 100ms backoff. Mutations, uploads, raw API calls (including `--paginate`), and HTTP-200 GraphQL errors do not retry. HTTP error detail is sanitized and previewed to first 512 bytes with `[truncated]` marker.
+Delete safety: inspect target first and retain identifier, team, and exact title; run one delete mutation; then use a narrowly scoped `issue query --team <KEY> --search='<retained title>'` exclusion check. `success:true` means provider accepted request. Never retry delete after success or ambiguous transport failure. Query exclusion is eventual-consistency evidence, not transactional proof; absence from an unfiltered first page is not definitive. Direct reads may be stale, null, or HTTP error, and provider-controlled tombstone behavior cannot be guaranteed by local tests. Read retries: statuses 500/502/503/504 and no-status transient transport failures, at most 3 attempts with 50ms then 100ms backoff. Mutations, uploads, raw API calls (including `--paginate`), and HTTP-200 GraphQL errors do not retry. HTTP error detail is sanitized and previewed to first 512 bytes with `[truncated]` marker.
 
 # Comments
 magi-linear-axi issue comment list ENG-123 --fields compact --limit 20
@@ -79,9 +76,9 @@ magi-linear-axi issue pull-request ENG-123
 magi-linear-axi --workspace acme issue view ENG-123 --web
 ```
 
-For filters, `--assignee` and project/milestone values currently expect Linear IDs; team accepts key. Repeat `--state` and `--label` for multiple values.
+For filters, `--assignee` and project/milestone values currently expect Linear IDs; team accepts key. Repeat `--state` and `--label` for multiple values. Prefer `--search='<TEXT>'` so the complete search remains one argument, including text beginning with `-`.
 
-Use `--fields compact` for issue view/listing, comment list, relation list, and project view when only stable core fields are needed. Compact comment/relation reads default to 50 records, accept `--limit`, and preserve `pageInfo.hasNextPage`; inspect it before treating a bounded connection as complete. Compact relation output omits relation IDs, so use default relation list before deletion. Invalid or unsupported selectors exit `2` before authentication/network.
+For agent read workflows, prefer `--fields compact` for issue view/mine/list/query, comment list, relation list, and project view. Use default projections only when compact output omits a required field. `issue mine`, `issue list`, and `issue query` are bounded to 50 records by default and return `pageInfo`. Compact comment/relation reads are likewise bounded, default to 50, accept `--limit`, and preserve `pageInfo`. Use the smallest task-sufficient limit and inspect `pageInfo.hasNextPage` before treating results as complete. Compact relation output omits relation IDs, so use default relation list before deletion. Invalid or unsupported selectors exit `2` before authentication/network.
 
 ## Teams and users
 
@@ -207,3 +204,4 @@ magi-linear-axi project update --help
 4. On exit `2`, fix syntax from `--help`; do not retry unchanged.
 5. On exit `1`, inspect structured `error.type` and `error.message`; do not expose credentials.
 6. Use `--format json` only when downstream tooling requires JSON. Otherwise retain TOON for token efficiency.
+7. Keep final answers concise and fact-focused. Do not impose a canonical JSON answer schema unless the caller explicitly requests one.

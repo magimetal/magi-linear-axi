@@ -14,16 +14,17 @@ import {
   validateCohort,
   writeReports,
 } from "../src/report.js";
+import type { BenchmarkResult } from "../src/types.js";
 import { result } from "./fixtures.js";
 
 function adoptionCohort(
   compactOverrides: Parameters<typeof result>[0] = {},
   canonicalOverrides: Parameters<typeof result>[0] = {},
 ) {
-  const shared = {
+  const shared: Partial<BenchmarkResult> = {
     matrixRunId: "adoption-run",
-    expectedConditions: ["axi"] as const,
-    expectedAnswerContracts: ["compact", "canonical"] as const,
+    expectedConditions: ["axi"],
+    expectedAnswerContracts: ["compact", "canonical"],
     expectedTaskIds: ["issue-lookup"],
     expectedRepeatCount: 1,
     judgeEnabled: true,
@@ -504,13 +505,13 @@ describe("report aggregation", () => {
   it("retains when canonical quality regresses in MCP", () => {
     const axi = adoptionCohort().map((item) => ({
       ...item,
-      expectedConditions: ["axi", "mcp"] as const,
+      expectedConditions: ["axi", "mcp"] as BenchmarkResult["expectedConditions"],
     }));
     const mcp = adoptionCohort().map((item) => ({
       ...item,
       resultId: `mcp-${item.answerContract}`,
       condition: "mcp" as const,
-      expectedConditions: ["axi", "mcp"] as const,
+      expectedConditions: ["axi", "mcp"] as BenchmarkResult["expectedConditions"],
       bashToolCalls: 0,
       mcpToolCalls: 1,
       ...(item.answerContract === "canonical"

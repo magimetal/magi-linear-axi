@@ -17,6 +17,15 @@ import { assertQueryOnly, GraphqlSafetyError } from "../src/graphql.js";
 import { expectedCanonicalAnswer } from "../src/answer-contract.js";
 import { generateTasks } from "../src/tasks.js";
 
+const EXACT_ISSUE_TITLE = "  Read “latency”\n";
+const EXACT_ISSUE_STATE = "  Todo\n";
+const EXACT_ISSUE_URL = "  https://linear.app/acme/issue/ENG-1\n";
+const EXACT_COMMENT_BODY = "  Read “this” \\ path\n";
+const EXACT_RELATED_TITLE = "  ignored\n";
+const EXACT_PROJECT_NAME = "  Performance\n";
+const EXACT_PROJECT_URL = "  https://linear.app/acme/project/performance\n";
+const EXACT_PROJECT_STATUS = "  Planned\n";
+
 function responses(): Record<string, Record<string, unknown>> {
 	return {
 		BenchmarkViewer: { viewer: { id: "viewer-1", name: "ignored" } },
@@ -32,10 +41,10 @@ function responses(): Record<string, Record<string, unknown>> {
 					{
 						id: "issue-1",
 						identifier: "ENG-1",
-						title: "Read latency",
-						url: "https://linear.app/acme/issue/ENG-1",
+						title: EXACT_ISSUE_TITLE,
+						url: EXACT_ISSUE_URL,
 						priority: 1,
-						state: { name: "Todo", type: "backlog" },
+						state: { name: EXACT_ISSUE_STATE, type: "backlog" },
 						team: { id: "team-1", key: "ENG", name: "Engineering" },
 					},
 				],
@@ -44,7 +53,7 @@ function responses(): Record<string, Record<string, unknown>> {
 		},
 		BenchmarkIssueTitleSearch: {
 			issues: {
-				nodes: [{ id: "issue-1", identifier: "ENG-1", title: "Read latency" }],
+				nodes: [{ id: "issue-1", identifier: "ENG-1", title: EXACT_ISSUE_TITLE }],
 				pageInfo: { hasNextPage: false },
 			},
 		},
@@ -55,7 +64,7 @@ function responses(): Record<string, Record<string, unknown>> {
 					nodes: [
 						{
 							id: "comment-1",
-							body: "Read this comment",
+							body: EXACT_COMMENT_BODY,
 							createdAt: "ignored",
 							user: { name: "ignored" },
 						},
@@ -67,7 +76,7 @@ function responses(): Record<string, Record<string, unknown>> {
 						{
 							id: "relation-1",
 							type: "blocks",
-							relatedIssue: { identifier: "ENG-2", title: "ignored" },
+							relatedIssue: { identifier: "ENG-2", title: EXACT_RELATED_TITLE },
 						},
 					],
 					pageInfo: { hasNextPage: false },
@@ -80,10 +89,10 @@ function responses(): Record<string, Record<string, unknown>> {
 				nodes: [
 					{
 						id: "project-1",
-						name: "Performance",
+						name: EXACT_PROJECT_NAME,
 						slugId: "ignored",
-						url: "https://linear.app/acme/project/performance",
-						status: { name: "", type: "ignored" },
+						url: EXACT_PROJECT_URL,
+						status: { name: EXACT_PROJECT_STATUS, type: "ignored" },
 						health: "ignored",
 					},
 				],
@@ -148,7 +157,7 @@ describe("read-only snapshot capture", () => {
 		expect(calls.find((call) => call.query === INVALID_ISSUE_QUERY)?.variables).toEqual({ number: 999999999, teamKey: "ENG" });
 		expect(
 			calls.find((call) => call.query === ISSUE_TITLE_SEARCH_QUERY)?.variables,
-		).toEqual({ title: "Read latency", first: SEARCH_VALIDATION_LIMIT });
+		).toEqual({ title: EXACT_ISSUE_TITLE, first: SEARCH_VALIDATION_LIMIT });
 		expect(calls.map((call) => call.query)).toContain(ISSUE_DETAIL_QUERY);
 		expect(calls.map((call) => call.query)).toContain(PROJECTS_QUERY);
 		for (const call of calls) {
@@ -159,21 +168,22 @@ describe("read-only snapshot capture", () => {
 		expect(snapshot.confirmedAbsentIssueIdentifier).toBe("ENG-999999999");
 		expect(snapshot.issues[0]).toMatchObject({
 			identifier: "ENG-1",
-			title: "Read latency",
-			stateName: "Todo",
+			title: EXACT_ISSUE_TITLE,
+			stateName: EXACT_ISSUE_STATE,
+			url: EXACT_ISSUE_URL,
 		});
 		expect(snapshot.issues[0]).not.toHaveProperty("priority");
 		expect(snapshot.issues[0].comments).toEqual([
-			{ id: "comment-1", body: "Read this comment" },
+			{ id: "comment-1", body: EXACT_COMMENT_BODY },
 		]);
 		expect(snapshot.issues[0].relations).toEqual([
-			{ type: "blocks", relatedIdentifier: "ENG-2", relatedTitle: "ignored" },
+			{ type: "blocks", relatedIdentifier: "ENG-2", relatedTitle: EXACT_RELATED_TITLE },
 		]);
 		expect(snapshot.projects[0]).toEqual({
 			id: "project-1",
-			name: "Performance",
-			url: "https://linear.app/acme/project/performance",
-			statusName: "",
+			name: EXACT_PROJECT_NAME,
+			url: EXACT_PROJECT_URL,
+			statusName: EXACT_PROJECT_STATUS,
 		});
 		expect(
 			expectedCanonicalAnswer(
@@ -181,9 +191,19 @@ describe("read-only snapshot capture", () => {
 					(task) => task.id === "project-lookup",
 				)!,
 			),
-		).toBe(
-			'{"name":"Performance","url":"https://linear.app/acme/project/performance","status":""}',
+		).toBe(JSON.stringify({
+			name: EXACT_PROJECT_NAME,
+			url: EXACT_PROJECT_URL,
+			status: EXACT_PROJECT_STATUS,
+		}));
+		const commentTask = generateTasks(snapshot).tasks.find(
+			(task) => task.id === "issue-comments",
 		);
+		expect(commentTask).toBeDefined();
+		expect(expectedCanonicalAnswer(commentTask!)).toBe(JSON.stringify({
+			comment_id: "comment-1",
+			body: EXACT_COMMENT_BODY,
+		}));
 		expect(ISSUES_QUERY).not.toMatch(/comments|relations|priority/iu);
 		expect(PROJECTS_QUERY).not.toMatch(/slugId|health|targetDate|priority/iu);
 		expect(VIEWER_QUERY).not.toMatch(/name/iu);

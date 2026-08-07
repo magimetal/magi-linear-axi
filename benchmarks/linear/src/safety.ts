@@ -1,6 +1,7 @@
 import { parseAxiArgv, axiCommandPath } from "./axi-argv.js";
 import { assertQueryOnly, GraphqlSafetyError } from "./graphql.js";
 import { commandInput, parseShellCommand } from "./operations.js";
+import { parsedToolCallKind } from "./types.js";
 import type {
 	Condition,
 	ParsedToolCall,
@@ -78,22 +79,12 @@ function inputText(input: unknown): string {
 	}
 }
 
-function classifyTool(name: string): ParsedToolCall["kind"] {
-	if (name.toLowerCase() === "bash") {
-		return "bash";
-	}
-	if (name.toLowerCase().startsWith("mcp__")) {
-		return "mcp";
-	}
-	return "other";
-}
-
 export function toolCall(
 	name: string,
 	input: unknown,
 	id?: string,
 ): ParsedToolCall {
-	const call: ParsedToolCall = { name, input, kind: classifyTool(name) };
+	const call: ParsedToolCall = { name, input, kind: parsedToolCallKind(name) };
 	if (id) {
 		call.id = id;
 	}
@@ -401,6 +392,9 @@ export function scanTrajectory(
 ): TrajectoryAudit {
 	const audit: TrajectoryAudit = { safetyViolations: [], policyIncidents: [] };
 	for (const call of calls) {
+		if (call.kind === "structured_output") {
+			continue;
+		}
 		if (condition === "axi") {
 			if (call.kind !== "bash" || call.name.toLowerCase() !== "bash") {
 				audit.safetyViolations.push(
