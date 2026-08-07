@@ -95,6 +95,8 @@ function emptyStream(): ParsedClaudeStream {
       cacheCreationInputTokens: 0,
       outputTokens: 0,
     },
+    usageCoverage: { outputTokens: false },
+    phaseMetrics: { coverage: [] },
     turns: 0,
     errors: [],
     parseErrors: 0,
@@ -610,6 +612,8 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
       cacheReadInputTokens: execution.parsed.usage.cacheReadInputTokens,
       cacheCreationInputTokens: execution.parsed.usage.cacheCreationInputTokens,
       outputTokens: execution.parsed.usage.outputTokens,
+      outputTokensCovered: execution.parsed.usageCoverage.outputTokens,
+      phaseMetrics: execution.parsed.phaseMetrics,
       ...(execution.parsed.usage.reportedCostUsd !== undefined
         ? { reportedCostUsd: execution.parsed.usage.reportedCostUsd }
         : {}),

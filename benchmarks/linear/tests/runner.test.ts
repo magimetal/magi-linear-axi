@@ -72,6 +72,17 @@ function parsedStream(binary = "/tmp/bin/magi-linear-axi"): ParsedClaudeStream {
     toolCalls: [{ id: "axi-1", name: "Bash", kind: "bash", input: { command: `${binary} issue view ENG-1 --fields compact` } }],
     toolResults: [{ toolUseId: "axi-1", text: "ENG-1", isError: false }],
     usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 1 },
+    usageCoverage: { outputTokens: true },
+    phaseMetrics: {
+      assistantToolArguments: { codePoints: 32, utf8Bytes: 32 },
+      terminalAnswerText: { codePoints: 5, utf8Bytes: 5 },
+      linkedToolResultText: { codePoints: 5, utf8Bytes: 5 },
+      coverage: [
+        "assistantToolArguments",
+        "terminalAnswerText",
+        "linkedToolResultText",
+      ],
+    },
     turns: 1,
     errors: [],
     parseErrors: 0,
@@ -319,6 +330,10 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     expect(result.outputTokens).toBe(9_876);
     expect(persisted.finalAnswer).toBe(longAnswer);
     expect(persisted.outputTokens).toBe(9_876);
+    expect(result.outputTokensCovered).toBe(true);
+    expect(result.phaseMetrics).toEqual(parsedStream().phaseMetrics);
+    expect(persisted.phaseMetrics).toEqual(parsedStream().phaseMetrics);
+    expect(JSON.stringify(persisted.phaseMetrics)).not.toContain("magi-linear-axi");
   });
 
   it("measures agent wall time separately from judge and orchestration time", async () => {
