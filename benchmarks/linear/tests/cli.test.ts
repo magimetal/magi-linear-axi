@@ -8,7 +8,35 @@ describe("benchmark CLI safety and cohort options", () => {
 		expect(options.limit).toBe(25);
 		expect(options.maxSnapshotAgeMinutes).toBe(30);
 	});
+	it("parses compact, canonical, all, and comma-separated answer-contract filters", () => {
+		expect(parseCliArgs(["matrix"]).answerContracts).toBeUndefined();
+		expect(
+			parseCliArgs(["matrix", "--answer-contract", "compact"])
+				.answerContracts,
+		).toEqual(["compact"]);
+		expect(
+			parseCliArgs(["matrix", "--answer-contract", "canonical"])
+				.answerContracts,
+		).toEqual(["canonical"]);
+		expect(
+			parseCliArgs(["matrix", "--answer-contract", "all"]).answerContracts,
+		).toEqual(["compact", "canonical"]);
+		expect(
+			parseCliArgs([
+				"matrix",
+				"--answer-contract",
+				"compact,canonical",
+			]).answerContracts,
+		).toEqual(["compact", "canonical"]);
+	});
 
+	it("rejects empty, unknown, duplicate, or mixed-all answer contracts", () => {
+		for (const value of ["", "other", "compact,compact", "all,canonical"]) {
+			expect(() =>
+				parseCliArgs(["matrix", "--answer-contract", value]),
+			).toThrow(/answer[- ]contract/u);
+		}
+	});
 	it("parses explicit run IDs and snapshot age limits", () => {
 		const options = parseCliArgs([
 			"report",

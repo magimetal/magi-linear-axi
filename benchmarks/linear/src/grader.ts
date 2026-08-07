@@ -1,3 +1,5 @@
+import { canonicalAnswerPassed, canonicalAnswerSchema } from "./answer-contract.js";
+import type { AnswerContract } from "./types.js";
 import type {
 	BenchmarkOperationKind,
 	BenchmarkTask,
@@ -131,11 +133,75 @@ function resultsForOperation(
 	return call?.id ? linked.get(call.id) ?? [] : [];
 }
 
+function escapedRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function explicitlyEmptyField(text: string, key: string): boolean {
+	const escapedKey = escapedRegex(key);
+	return new RegExp(
+		`(?:^|[\\s,{])(?:"${escapedKey}"|${escapedKey})\\s*[:=]\\s*(?:""|'')(?:$|[\\s,}])`,
+		"u",
+	).test(text);
+}
+
+function jsonContainsEmptyNestedField(
+	value: unknown,
+	parentKey: string,
+	childKey: string,
+): boolean {
+	if (Array.isArray(value)) {
+		return value.some((item) =>
+			jsonContainsEmptyNestedField(item, parentKey, childKey),
+		);
+	}
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	const record = value as Record<string, unknown>;
+	const parent = record[parentKey];
+	if (
+		parent &&
+		typeof parent === "object" &&
+		!Array.isArray(parent) &&
+		(parent as Record<string, unknown>)[childKey] === ""
+	) {
+		return true;
+	}
+	return Object.values(record).some((item) =>
+		jsonContainsEmptyNestedField(item, parentKey, childKey),
+	);
+}
+
+function explicitlyEmptyNestedField(
+	text: string,
+	parentKey: string,
+	childKey: string,
+): boolean {
+	try {
+		return jsonContainsEmptyNestedField(
+			JSON.parse(text) as unknown,
+			parentKey,
+			childKey,
+		);
+	} catch {
+		// AXI's default TOON output is not JSON; check its indented field shape.
+	}
+	const escapedParent = escapedRegex(parentKey);
+	const escapedChild = escapedRegex(childKey);
+	return new RegExp(
+		`(?:^|\\r?\\n)([ \\t]*)${escapedParent}\\s*:\\s*\\r?\\n\\1[ \\t]+${escapedChild}\\s*:\\s*(?:""|'')(?:$|\\r?\\n)`,
+		"u",
+	).test(text);
+}
+
 function evidenceForFact(
 	value: string,
 	stream: ParsedClaudeStream,
 	source: BenchmarkOperationKind | undefined,
 	operations: readonly ObservedOperation[],
+	emptyFieldKey?: string,
+	emptyEvidencePath?: readonly [string, string],
 ): { grounded: boolean; results: typeof stream.toolResults } {
 	const expected = normalize(value);
 	const linked = linkedResults(stream);
@@ -143,9 +209,20 @@ function evidenceForFact(
 		? operations
 				.filter((operation) => operation.kind === source)
 				.flatMap((operation) => resultsForOperation(stream, operation, linked))
-			: [...linked.values()].flat();
+		: [...linked.values()].flat();
 	const results = candidates.filter(
-		(result) => !result.isError && normalize(result.text).includes(expected),
+		(result) =>
+			!result.isError &&
+			(value.length === 0
+				? emptyEvidencePath !== undefined
+					? explicitlyEmptyNestedField(
+							result.text,
+							emptyEvidencePath[0],
+							emptyEvidencePath[1],
+						)
+					: emptyFieldKey !== undefined &&
+						explicitlyEmptyField(result.text, emptyFieldKey)
+				: normalize(result.text).includes(expected)),
 	);
 	return { grounded: results.length > 0, results };
 }
@@ -314,8 +391,9 @@ export function gradeDeterministically(
 	stream: ParsedClaudeStream,
 	safetyViolations: readonly SafetyViolation[],
 	resolvedAxiBin = "magi-linear-axi",
+	answerContract: AnswerContract = "compact",
 ): DeterministicGrade {
-	const counts = toolUseCounts(stream);
+  const counts = toolUseCounts(stream);
 	const toolUseObserved = expectedToolUse(condition, counts);
 	const operations = classifyOperations(condition, stream.toolCalls, resolvedAxiBin);
 	const linked = linkedResults(stream);
@@ -323,6 +401,8 @@ export function gradeDeterministically(
 		task.requiredOperations.length === 0 ||
 		(operationTraceMatches(task.requiredOperations, operations) &&
 			operationRequirementsMatch(task.requiredOperations, operations, linked));
+	const formatPassed =
+		answerContract === "compact" || canonicalAnswerPassed(task, answer);
 	const factChecks = task.requiredFacts.map((fact) => {
 		if (fact.kind === "not_found") {
 			const grounded = notFoundEvidence(
@@ -337,24 +417,44 @@ export function gradeDeterministically(
 				grounded,
 			};
 		}
+		const hasExpectedValue = fact.value !== undefined;
 		const value = fact.value ?? "";
+		const emptyFieldKey =
+			value.length === 0
+				? canonicalAnswerSchema(task)
+						.flatMap((record) => record.fields)
+						.find((field) => field.factLabel === fact.label)?.key
+				: undefined;
+		const emptyEvidencePath =
+			value.length === 0 && fact.label === "project status"
+				? (["status", "name"] as const)
+				: undefined;
 		const grounded =
-			value.length > 0 &&
-			evidenceForFact(value, stream, fact.source, operations).grounded;
+			hasExpectedValue &&
+			evidenceForFact(
+				value,
+				stream,
+				fact.source,
+				operations,
+				emptyFieldKey,
+				emptyEvidencePath,
+			).grounded;
+		const answerPassed =
+			value.length === 0
+				? answerContract === "canonical" && formatPassed
+				: normalize(answer).includes(normalize(value));
 		return {
 			label: fact.label,
-			passed:
-				value.length > 0 &&
-				normalize(answer).includes(normalize(value)) &&
-				grounded,
+			passed: hasExpectedValue && answerPassed && grounded,
 			grounded,
 		};
 	});
 	const factsPassed = factChecks.every((check) => check.passed);
-	const enoughTools = counts.total >= task.minimumToolCalls;
 	const failedInfrastructure = infrastructureFailure(task, stream);
+	const enoughTools = counts.total >= task.minimumToolCalls;
 	const passed =
 		safetyViolations.length === 0 &&
+		formatPassed &&
 		toolUseObserved &&
 		enoughTools &&
 		operationChecksPassed &&
@@ -375,14 +475,18 @@ export function gradeDeterministically(
 	} else if (!operationChecksPassed) {
 		reason =
 			"the observed operation trace, exact operand, or linked result semantics did not match the task";
+	} else if (!formatPassed) {
+		reason = "canonical answer format or exact serialization failed";
 	} else if (!factsPassed) {
 		reason =
-			"one or more deterministic required-fact assertions failed or lacked linked tool evidence";
+		"one or more deterministic required-fact assertions failed or lacked linked tool evidence";
 	}
 	return {
 		passed,
 		score: passed ? 1 : 0,
 		reason,
+		formatPassed,
+		...(formatPassed ? {} : { formatReason: "canonical answer format or exact serialization failed" }),
 		factChecks,
 		operationTrace: operations.map((operation) => operation.kind),
 		operationChecksPassed,
@@ -428,6 +532,7 @@ export function boundedToolEvidence(
 export interface JudgeOptions {
 	task: BenchmarkTask;
 	condition: Condition;
+	answerContract: AnswerContract;
 	answer: string;
 	deterministic: DeterministicGrade;
 	toolCounts: ToolUseCounts;
@@ -450,7 +555,7 @@ function judgePrompt(options: JudgeOptions): string {
 	const facts = options.task.requiredFacts.map((fact) => ({
 		label: fact.label,
 		kind: fact.kind,
-		...(fact.value ? { value: fact.value } : {}),
+		...(fact.value !== undefined ? { value: fact.value } : {}),
 		...(fact.source ? { source: fact.source } : {}),
 	}));
 	return [
@@ -467,6 +572,8 @@ function judgePrompt(options: JudgeOptions): string {
 				minimumToolCalls: options.task.minimumToolCalls,
 				requiredOperations: options.task.requiredOperations,
 			},
+			answerContract: options.answerContract,
+			answerSchema: options.task.canonicalAnswer,
 			requiredFacts: facts,
 			gradingHints: options.task.gradingHints,
 			answer: options.answer,

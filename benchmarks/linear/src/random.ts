@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import type { BenchmarkTask, Condition } from "./types.js";
+import type { AnswerContract, BenchmarkTask, Condition } from "./types.js";
 
 export interface MatrixCase {
 	task: BenchmarkTask;
 	condition: Condition;
+	answerContract: AnswerContract;
 	repeatIndex: number;
 }
 
@@ -36,43 +37,42 @@ export function shuffleWithSeed<T>(items: readonly T[], seed: string): T[] {
 	return result;
 }
 
-/**
- * Randomizes task/repeat blocks, then randomizes condition order inside each
- * block. The two condition cases remain adjacent for paired live comparison.
- */
+/** Randomizes task/repeat blocks and adjacent condition/contract cells. */
 export function createMatrixSchedule(
 	tasks: readonly BenchmarkTask[],
 	conditions: readonly Condition[],
+	answerContracts: readonly AnswerContract[],
 	repeat: number,
 	seed: string,
 ): MatrixCase[] {
 	if (repeat < 1 || !Number.isInteger(repeat)) {
 		throw new Error("repeat must be a positive integer");
 	}
-	if (conditions.length === 0) {
-		throw new Error("at least one condition is required");
+	if (conditions.length === 0 || answerContracts.length === 0) {
+		throw new Error("at least one condition and answer contract is required");
 	}
+	const cells = conditions.flatMap((condition) =>
+		answerContracts.map((answerContract) => ({ condition, answerContract })),
+	);
 	const blocks: MatrixBlock[] = [];
 	for (let repeatIndex = 1; repeatIndex <= repeat; repeatIndex += 1) {
 		for (const task of tasks) {
 			blocks.push({ task, repeatIndex });
 		}
 	}
-	const randomizedBlocks = shuffleWithSeed(blocks, `${seed}:blocks`);
 	const cases: MatrixCase[] = [];
-	randomizedBlocks.forEach((block, blockIndex) => {
-		const conditionOrder = shuffleWithSeed(
-			conditions,
-			`${seed}:conditions:${blockIndex}`,
-		);
-		for (const condition of conditionOrder) {
+	for (const [blockIndex, block] of shuffleWithSeed(
+		blocks,
+		`${seed}:blocks`,
+	).entries()) {
+		for (const cell of shuffleWithSeed(cells, `${seed}:cells:${blockIndex}`)) {
 			cases.push({
 				task: block.task,
-				condition,
+				...cell,
 				repeatIndex: block.repeatIndex,
 			});
 		}
-	});
+	}
 	return cases;
 }
 

@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+### Added
+
+- Add interface-neutral compact-versus-canonical benchmark cells. Canonical answers use exact minified JSON with ordered task schemas, string values, literal Unicode, normal JSON escaping, ordered arrays for multiple records, and explicit issue-scoped not-found errors.
+- Add contract-aware scheduling, preflight/grading, strict cohort validation, provider output-token coverage, terminal Unicode-character/UTF-8-byte metrics, and `adopt`/`retain`/`not_evaluable` reporting against the 15% adoption gate.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added

@@ -14,6 +14,8 @@ import {
 	VIEWER_QUERY,
 } from "../src/snapshot.js";
 import { assertQueryOnly, GraphqlSafetyError } from "../src/graphql.js";
+import { expectedCanonicalAnswer } from "../src/answer-contract.js";
+import { generateTasks } from "../src/tasks.js";
 
 function responses(): Record<string, Record<string, unknown>> {
 	return {
@@ -81,7 +83,7 @@ function responses(): Record<string, Record<string, unknown>> {
 						name: "Performance",
 						slugId: "ignored",
 						url: "https://linear.app/acme/project/performance",
-						status: { name: "Planned", type: "ignored" },
+						status: { name: "", type: "ignored" },
 						health: "ignored",
 					},
 				],
@@ -171,8 +173,17 @@ describe("read-only snapshot capture", () => {
 			id: "project-1",
 			name: "Performance",
 			url: "https://linear.app/acme/project/performance",
-			statusName: "Planned",
+			statusName: "",
 		});
+		expect(
+			expectedCanonicalAnswer(
+				generateTasks(snapshot).tasks.find(
+					(task) => task.id === "project-lookup",
+				)!,
+			),
+		).toBe(
+			'{"name":"Performance","url":"https://linear.app/acme/project/performance","status":""}',
+		);
 		expect(ISSUES_QUERY).not.toMatch(/comments|relations|priority/iu);
 		expect(PROJECTS_QUERY).not.toMatch(/slugId|health|targetDate|priority/iu);
 		expect(VIEWER_QUERY).not.toMatch(/name/iu);

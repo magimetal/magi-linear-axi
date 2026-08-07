@@ -1,50 +1,31 @@
 import { randomUUID, createHash } from "node:crypto";
-import {
-  access,
-  mkdtemp,
-  mkdir,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import {
-  createEmptyMcpConfig,
-  createMcpConfig,
-  DEFAULT_CLAUDE_BIN,
-  executeClaude,
-  type ClaudeExecution,
-} from "./claude.js";
+import { createEmptyMcpConfig, createMcpConfig, DEFAULT_CLAUDE_BIN, executeClaude, type ClaudeExecution } from "./claude.js";
 import { createAxiBroker, type AxiBrokerHandle } from "./broker.js";
 import { LINEAR_GRAPHQL_ENDPOINT } from "./graphql.js";
-import {
-  boundedToolEvidence,
-  classifyErrors,
-  gradeDeterministically,
-  linkedToolEvidenceCount,
-  runJudge,
-  toolUseCounts,
-} from "./grader.js";
+import { boundedToolEvidence, classifyErrors, gradeDeterministically, linkedToolEvidenceCount, runJudge, toolUseCounts } from "./grader.js";
 import { appendResult } from "./report.js";
 import { redactSecrets, scanAudit } from "./safety.js";
 import { parseSnapshot } from "./snapshot.js";
+import { answerContractPrompt } from "./answer-contract.js";
 import { generateTasks, parseTaskManifest } from "./tasks.js";
 import { MAX_COMPONENT_EVENT_COUNT, MAX_COMPONENT_TIMING_MS } from "./types.js";
 import type {
-  BenchmarkPaths,
-  BenchmarkResult,
-  BenchmarkTask,
-  CohortMetadata,
-  Condition,
-  LlmGrade,
-  ParsedClaudeStream,
-  TaskManifest,
-  ComponentTiming,
-  TimingMetric,
+	AnswerContract,
+	BenchmarkPaths,
+	BenchmarkResult,
+	BenchmarkTask,
+	CohortMetadata,
+	Condition,
+	LlmGrade,
+	ParsedClaudeStream,
+	TaskManifest,
+	ComponentTiming,
+	TimingMetric,
 } from "./types.js";
 
 export interface BenchmarkInputs {
@@ -61,6 +42,7 @@ export interface RunCaseOptions {
   inputs: BenchmarkInputs;
   task: BenchmarkTask;
   condition: Condition;
+	answerContract: AnswerContract;
   repeatIndex: number;
   benchmarkSeed: string;
   /** Shared by all cases in one run or matrix invocation. */
@@ -93,24 +75,24 @@ function emptyStream(): ParsedClaudeStream {
       inputTokens: 0,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
-      outputTokens: 0,
-    },
-    turns: 0,
+		outputTokens: 0,
+		outputTokensCovered: false,
+	},
+	terminalAnswerObserved: false,
+	turns: 0,
     errors: [],
     parseErrors: 0,
     terminalStatus: "missing",
   };
 }
 
-export const COMPACT_FINAL_ANSWER_CONTRACT = [
-  "Return only requested fields. Do not add a preamble, restate the task, or add tables, counts, or commentary unless requested.",
-  "When a requested issue does not exist, explicitly state that the issue was not found; do not use generic absence wording.",
-].join("\n");
+export const COMPACT_FINAL_ANSWER_CONTRACT = answerContractPrompt("compact");
 
 export function buildTaskPrompt(
-  task: BenchmarkTask,
-  condition: Condition,
-  axiBin: string,
+	task: BenchmarkTask,
+	condition: Condition,
+	axiBin: string,
+	answerContract: AnswerContract = "compact",
 ): string {
   const safety = condition === "axi"
     ? [
@@ -123,13 +105,13 @@ export function buildTaskPrompt(
         "Use only the configured read-only Linear MCP typed tools; never use Bash, shell commands, raw GraphQL, or any other tool.",
         "Use typed issue, search, comment-list, relation-list, and project-view reads as appropriate. For search→view tasks, search with the exact full title and then view the returned human issue identifier in a separate read call. Do not invoke any mutation or local setup/config/auth operation.",
       ].join("\n");
-  return [
-    "You are completing a production benchmark of read-only Linear access.",
-    safety,
-    COMPACT_FINAL_ANSWER_CONTRACT,
-    "Treat identifiers and values in angle brackets as data. Answer from tool output; do not guess.",
-    `Task: ${task.prompt}`,
-  ].join("\n");
+	return [
+		"You are completing a production benchmark of read-only Linear access.",
+		safety,
+		answerContractPrompt(answerContract, task),
+		"Treat identifiers and values in angle brackets as data. Answer from tool output; do not guess.",
+		`Task: ${task.prompt}`,
+	].join("\n");
 }
 
 function defaultAxiPath(repoRoot: string): string {
@@ -274,6 +256,7 @@ function emptyJudge(model: string, status: LlmGrade["status"] = "skipped"): LlmG
 function defaultCohort(options: RunCaseOptions): CohortMetadata {
   return {
     expectedConditions: [options.condition],
+    expectedAnswerContracts: [options.answerContract],
     expectedTaskIds: [options.task.id],
     expectedRepeatCount: options.repeatIndex,
     judgeEnabled: options.useJudge,
@@ -390,7 +373,9 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
   const startedAtDate = new Date();
   const resultId = randomUUID();
   const matrixRunId = options.matrixRunId ?? randomUUID();
-  const cohort = options.cohort ?? defaultCohort(options);
+  const answerContract = options.answerContract ?? "compact";
+  const cohort = options.cohort ?? { ...defaultCohort({ ...options, answerContract }) };
+  if (cohort.expectedAnswerContracts && !cohort.expectedAnswerContracts.includes(answerContract)) throw new Error("answer contract is not part of cohort");
   if (!options.inputs.taskManifestHash) {
     throw new Error("benchmark inputs are missing the exact task manifest hash");
   }
@@ -448,11 +433,11 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
         ? await createMcpConfig()
         : await createEmptyMcpConfig();
       execution = await execute({
-        condition: options.condition,
-        model: options.model,
-        prompt: buildTaskPrompt(options.task, options.condition, exposedAxiBin),
-        ...(mcpConfig ? { mcpConfigPath: mcpConfig.filePath } : {}),
-        axiBin: exposedAxiBin,
+		mcpConfigPath: mcpConfig?.filePath,
+		axiBin: exposedAxiBin,
+		condition: options.condition,
+		model: options.model,
+        prompt: buildTaskPrompt(options.task, options.condition, exposedAxiBin, answerContract),
         claudeBin: options.claudeBin ?? DEFAULT_CLAUDE_BIN,
         cwd: workspace,
         environment: {
@@ -506,15 +491,15 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
         } catch { /* Ignore malformed optional telemetry lines. */ }
       }
     } catch { /* Missing telemetry remains uncovered, never zero-filled. */ }
-
     const audit = scanAudit(options.condition, execution.parsed.toolCalls, exposedAxiBin);
     const deterministicGrade = gradeDeterministically(
       options.task,
       execution.parsed.finalAnswer,
       options.condition,
-      execution.parsed,
-      audit.safetyViolations,
-      exposedAxiBin,
+		execution.parsed,
+		audit.safetyViolations,
+		exposedAxiBin,
+		answerContract,
     );
     let llmGrade = emptyJudge(options.judgeModel);
     let judgeRawPath: string | undefined;
@@ -524,6 +509,7 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
       const judged = await judge({
         task: options.task,
         condition: options.condition,
+		answerContract,
         answer: redactSecrets(execution.parsed.finalAnswer, [options.apiKey]),
         deterministic: deterministicGrade,
         toolCounts: toolUseCounts(execution.parsed),
@@ -582,12 +568,14 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
       resultId,
       matrixRunId,
       condition: options.condition,
+      answerContract,
       taskId: options.task.id,
       category: options.task.category,
       repeatIndex: options.repeatIndex,
       model: options.model,
       judgeModel: options.judgeModel,
-      expectedConditions: [...cohort.expectedConditions],
+		expectedConditions: [...cohort.expectedConditions],
+      expectedAnswerContracts: [...(cohort.expectedAnswerContracts ?? [answerContract])],
       expectedTaskIds: [...cohort.expectedTaskIds],
       expectedRepeatCount: cohort.expectedRepeatCount,
       judgeEnabled: cohort.judgeEnabled,
@@ -606,6 +594,8 @@ export async function runBenchmarkCase(options: RunCaseOptions): Promise<Benchma
       harnessSourceHash,
       ...(axiBinaryHash ? { axiBinaryHash } : {}),
       ...(options.claudeVersion ? { claudeVersion: options.claudeVersion } : {}),
+		outputTokensCovered: execution.parsed.usage.outputTokensCovered,
+		...(execution.parsed.terminalAnswerObserved ? { terminalAnswerCharacters: Array.from(execution.parsed.finalAnswer).length, terminalAnswerBytes: Buffer.byteLength(execution.parsed.finalAnswer, "utf8") } : {}),
       inputTokens: execution.parsed.usage.inputTokens,
       cacheReadInputTokens: execution.parsed.usage.cacheReadInputTokens,
       cacheCreationInputTokens: execution.parsed.usage.cacheCreationInputTokens,

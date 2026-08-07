@@ -3,6 +3,7 @@ import { chmod, access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { answerContractPrompt } from "../src/answer-contract.js";
 import {
   COMPACT_FINAL_ANSWER_CONTRACT,
   buildHelperSubprocessEnvironment,
@@ -68,10 +69,17 @@ const task: BenchmarkTask = {
 
 function parsedStream(binary = "/tmp/bin/magi-linear-axi"): ParsedClaudeStream {
   return {
+		terminalAnswerObserved: true,
     finalAnswer: "ENG-1",
     toolCalls: [{ id: "axi-1", name: "Bash", kind: "bash", input: { command: `${binary} issue view ENG-1` } }],
     toolResults: [{ toolUseId: "axi-1", text: "ENG-1", isError: false }],
-    usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 1 },
+    usage: {
+      inputTokens: 1,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      outputTokens: 1,
+      outputTokensCovered: true,
+    },
     turns: 1,
     errors: [],
     parseErrors: 0,
@@ -133,6 +141,33 @@ describe("benchmark case isolation and cohorts", () => {
         expect(prompt).not.toContain("\\n");
       }
     }
+  });
+
+  it("embeds the byte-identical canonical block for AXI and MCP", () => {
+    const canonicalTask: BenchmarkTask = {
+      ...task,
+      canonicalAnswer: [{
+        fields: [{ key: "identifier", factLabel: "identifier" }],
+      }],
+    };
+    const contract = answerContractPrompt("canonical", canonicalTask);
+    const axiPrompt = buildTaskPrompt(
+      canonicalTask,
+      "axi",
+      "/tmp/bin/magi-linear-axi",
+      "canonical",
+    );
+    const mcpPrompt = buildTaskPrompt(
+      canonicalTask,
+      "mcp",
+      "/tmp/bin/magi-linear-axi",
+      "canonical",
+    );
+    expect(axiPrompt.split(contract)).toHaveLength(2);
+    expect(mcpPrompt.split(contract)).toHaveLength(2);
+    expect(contract).toContain('Schema key order: [["identifier"]]');
+    expect(axiPrompt).not.toContain(COMPACT_FINAL_ANSWER_CONTRACT);
+    expect(mcpPrompt).not.toContain(COMPACT_FINAL_ANSWER_CONTRACT);
   });
 
   it("hashes source inputs deterministically while excluding live artifacts", async () => {
@@ -311,14 +346,77 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
     expect(persisted.expectedTaskIds).toEqual(["issue-lookup"]);
     expect(persisted.expectedRepeatCount).toBe(1);
     expect(persisted.judgeEnabled).toBe(false);
+    expect(persisted.expectedAnswerContracts).toEqual(["compact"]);
     expect(persisted.harnessSourceHash).toBe("fixture-source-hash");
     expect(persisted.taskManifestHash).toBe("task-manifest-hash");
     expect(persisted.axiBinaryHash).toBe("fixture-axi-hash");
     expect(persisted.claudeVersion).toBe("Claude fixture 1.0.0");
     expect(result.finalAnswer).toBe(longAnswer);
     expect(result.outputTokens).toBe(9_876);
+    expect(result.outputTokensCovered).toBe(true);
+    expect(result.terminalAnswerCharacters).toBe(Array.from(longAnswer).length);
+    expect(result.terminalAnswerBytes).toBe(Buffer.byteLength(longAnswer, "utf8"));
     expect(persisted.finalAnswer).toBe(longAnswer);
     expect(persisted.outputTokens).toBe(9_876);
+  });
+
+  it("records observed empty terminal answers and missing terminal coverage distinctly", async () => {
+    const directory = await mkdtemp(join(process.cwd(), "linear-runner-empty-answer-test-"));
+    temporaryDirectories.push(directory);
+    const paths = pathsFor(directory);
+    const common = {
+      paths,
+      inputs: {
+        snapshotGeneratedAt: "2026-08-05T12:00:00.000Z",
+        snapshotHash: "snapshot-hash",
+        taskManifestHash: "task-manifest-hash",
+        tasks: [task],
+        warnings: [],
+      },
+      task,
+      condition: "axi" as const,
+      answerContract: "compact" as const,
+      repeatIndex: 1,
+      benchmarkSeed: "seed",
+      model: "test-model",
+      judgeModel: "test-judge",
+      useJudge: false,
+      axiBin: "/tmp/bin/magi-linear-axi",
+      apiKey: "test-key",
+      harnessSourceHash: "fixture-source-hash",
+      axiBinaryHash: "fixture-axi-hash",
+      claudeVersion: "Claude fixture 1.0.0",
+    };
+    const observed = await runBenchmarkCase({
+      ...common,
+      matrixRunId: "observed-empty",
+      execute: async (options) => {
+        const parsed = parsedStream(options.axiBin);
+        parsed.finalAnswer = "";
+        parsed.usage.outputTokens = 0;
+        return { stdout: "", stderr: "", parsed };
+      },
+    });
+    expect(observed.terminalAnswerCharacters).toBe(0);
+    expect(observed.terminalAnswerBytes).toBe(0);
+    expect(observed.outputTokens).toBe(0);
+    expect(observed.outputTokensCovered).toBe(true);
+
+    const missing = await runBenchmarkCase({
+      ...common,
+      matrixRunId: "missing-terminal",
+      execute: async (options) => {
+        const parsed = parsedStream(options.axiBin);
+        parsed.finalAnswer = "";
+        parsed.terminalAnswerObserved = false;
+        parsed.usage.outputTokens = 0;
+        parsed.usage.outputTokensCovered = false;
+        return { stdout: "", stderr: "", parsed };
+      },
+    });
+    expect(missing.terminalAnswerCharacters).toBeUndefined();
+    expect(missing.terminalAnswerBytes).toBeUndefined();
+    expect(missing.outputTokensCovered).toBe(false);
   });
 
   it("measures agent wall time separately from judge and orchestration time", async () => {

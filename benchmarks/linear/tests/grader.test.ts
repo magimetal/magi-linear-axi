@@ -27,6 +27,7 @@ function stream(
 	toolResults: ParsedClaudeStream["toolResults"] = [],
 ): ParsedClaudeStream {
 	return {
+		terminalAnswerObserved: true,
 		finalAnswer: "",
 		toolCalls,
 		toolResults,
@@ -35,6 +36,7 @@ function stream(
 			cacheReadInputTokens: 0,
 			cacheCreationInputTokens: 0,
 			outputTokens: 0,
+			outputTokensCovered: true,
 		},
 		turns: 1,
 		errors: [],
@@ -69,6 +71,219 @@ describe("deterministic grading", () => {
 		expect(grade.passed).toBe(true);
 		expect(grade.score).toBe(1);
 		expect(grade.factChecks.every((fact) => fact.grounded)).toBe(true);
+	});
+
+	it("requires exact canonical serialization without relaxing grounding or tool use", () => {
+		const canonicalTask: BenchmarkTask = {
+			...task,
+			canonicalAnswer: [{
+				fields: [
+					{ key: "identifier", factLabel: "identifier" },
+					{ key: "title", factLabel: "title" },
+				],
+			}],
+		};
+		for (const [condition, call] of [
+			["axi", {
+				id: "read-1",
+				name: "Bash",
+				kind: "bash",
+				input: { command: "magi-linear-axi issue view ENG-10" },
+			}],
+			["mcp", {
+				id: "read-1",
+				name: "mcp__linear__get_issue",
+				kind: "mcp",
+				input: { id: "ENG-10" },
+			}],
+		] as const) {
+			const trajectory = stream(
+				[call],
+				[{
+					toolUseId: "read-1",
+					text: "ENG-10 Improve query latency",
+					isError: false,
+				}],
+			);
+			const exact = gradeDeterministically(
+				canonicalTask,
+				'{"identifier":"ENG-10","title":"Improve query latency"}',
+				condition,
+				trajectory,
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(exact.passed, condition).toBe(true);
+			expect(exact.formatPassed, condition).toBe(true);
+			for (const invalid of [
+				'{ "identifier":"ENG-10","title":"Improve query latency"}',
+				'{"title":"Improve query latency","identifier":"ENG-10"}',
+				'```json\n{"identifier":"ENG-10","title":"Improve query latency"}\n```',
+			]) {
+				const failed = gradeDeterministically(
+					canonicalTask,
+					invalid,
+					condition,
+					trajectory,
+					[],
+					"magi-linear-axi",
+					"canonical",
+				);
+				expect(failed.passed, invalid).toBe(false);
+				expect(failed.formatPassed, invalid).toBe(false);
+				expect(failed.factChecks.every((fact) => fact.grounded)).toBe(true);
+			}
+		}
+	});
+
+	it("grades an explicit empty canonical string when linked read evidence exists", () => {
+		const emptyTask: BenchmarkTask = {
+			...task,
+			requiredFacts: [{ label: "optional note", kind: "contains", value: "" }],
+			canonicalAnswer: [{
+				fields: [{ key: "note", factLabel: "optional note" }],
+			}],
+		};
+		const trajectory = stream(
+			[{
+				id: "read-empty",
+				name: "Bash",
+				kind: "bash",
+				input: { command: "magi-linear-axi issue view ENG-10" },
+			}],
+			[{ toolUseId: "read-empty", text: '{"note":""}', isError: false }],
+		);
+		const grade = gradeDeterministically(
+			emptyTask,
+			'{"note":""}',
+			"axi",
+			trajectory,
+			[],
+			"magi-linear-axi",
+			"canonical",
+		);
+		expect(grade.passed).toBe(true);
+		expect(grade.factChecks).toEqual([
+			{ label: "optional note", passed: true, grounded: true },
+		]);
+		expect(
+			gradeDeterministically(
+				emptyTask,
+				"",
+				"axi",
+				trajectory,
+				[],
+				"magi-linear-axi",
+				"compact",
+			).passed,
+		).toBe(false);
+		for (const [condition, call] of [
+			["axi", {
+				id: "empty-unrelated",
+				name: "Bash",
+				kind: "bash",
+				input: { command: "magi-linear-axi issue view ENG-10" },
+			}],
+			["mcp", {
+				id: "empty-unrelated",
+				name: "mcp__linear__get_issue",
+				kind: "mcp",
+				input: { id: "ENG-10" },
+			}],
+		] as const) {
+			const unrelated = gradeDeterministically(
+				emptyTask,
+				'{"note":""}',
+				condition,
+				stream(
+					[call],
+					[{
+						toolUseId: "empty-unrelated",
+						text: "completely unrelated nonempty output",
+						isError: false,
+					}],
+				),
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(unrelated.passed, condition).toBe(false);
+			expect(unrelated.factChecks[0]?.grounded, condition).toBe(false);
+		}
+	});
+
+	it("grounds empty project status from nested AXI and MCP evidence", () => {
+		const projectTask: BenchmarkTask = {
+			...task,
+			requiredFacts: [
+				{ label: "project status", kind: "contains", value: "" },
+			],
+			canonicalAnswer: [{
+				fields: [{ key: "status", factLabel: "project status" }],
+			}],
+		};
+		for (const [condition, call, evidence] of [
+			[
+				"axi",
+				{
+					id: "project-empty",
+					name: "Bash",
+					kind: "bash",
+					input: { command: "magi-linear-axi project view project-1" },
+				},
+				'project:\n  name: "Performance"\n  status:\n    name: ""',
+			],
+			[
+				"mcp",
+				{
+					id: "project-empty",
+					name: "mcp__linear__get_project",
+					kind: "mcp",
+					input: { id: "project-1" },
+				},
+				'{"name":"Performance","status":{"name":""}}',
+			],
+		] as const) {
+			const grade = gradeDeterministically(
+				projectTask,
+				'{"status":""}',
+				condition,
+				stream(
+					[call],
+					[{ toolUseId: "project-empty", text: evidence, isError: false }],
+				),
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(grade.passed, condition).toBe(true);
+			expect(grade.factChecks[0]?.grounded, condition).toBe(true);
+		}
+		for (const evidence of [
+			'{"status":{"id":"started"},"owner":{"name":""}}',
+			'{"status":"","owner":{"name":"Taylor"}}',
+		]) {
+			const unrelated = gradeDeterministically(
+				projectTask,
+				'{"status":""}',
+				"axi",
+				stream(
+					[{
+						id: "project-empty",
+						name: "Bash",
+						kind: "bash",
+						input: { command: "magi-linear-axi project view project-1" },
+					}],
+					[{ toolUseId: "project-empty", text: evidence, isError: false }],
+				),
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(unrelated.passed, evidence).toBe(false);
+			expect(unrelated.factChecks[0]?.grounded, evidence).toBe(false);
+		}
 	});
 
 	it("does not accept unsupported final-answer guessing without linked tool results", () => {
@@ -392,6 +607,7 @@ describe("deterministic grading", () => {
 			deterministic,
 			toolCounts: toolUseCounts(missingTerminal),
 			cwd: "/tmp",
+			answerContract: "compact" as const,
 		};
 		const missing = await runJudge({
 			...baseOptions,
@@ -415,6 +631,53 @@ describe("deterministic grading", () => {
 			}),
 		});
 		expect(judged.grade).toMatchObject({ status: "passed", score: 1 });
+	});
+
+	it("passes answer contract and canonical schema to the judge unchanged", async () => {
+		const canonicalTask: BenchmarkTask = {
+			...task,
+			requiredFacts: [
+				...task.requiredFacts,
+				{ label: "optional note", kind: "contains", value: "" },
+			],
+			canonicalAnswer: [{
+				fields: [
+					{ key: "identifier", factLabel: "identifier" },
+					{ key: "title", factLabel: "title" },
+					{ key: "note", factLabel: "optional note" },
+				],
+			}],
+		};
+		const answer = '{"identifier":"ENG-10","title":"Improve query latency","note":""}';
+		const deterministic = gradeDeterministically(
+			canonicalTask,
+			answer,
+			"axi",
+			stream([], []),
+			[],
+			"magi-linear-axi",
+			"canonical",
+		);
+		let prompt = "";
+		const judgeStream = stream([], []);
+		judgeStream.finalAnswer = '{"passed":true,"score":1,"rationale":"ok"}';
+		await runJudge({
+			task: canonicalTask,
+			condition: "axi",
+			answerContract: "canonical",
+			answer,
+			deterministic,
+			toolCounts: { total: 1, bash: 1, mcp: 0 },
+			cwd: "/tmp",
+			execute: async (options) => {
+				prompt = options.prompt;
+				return { stdout: "judge", stderr: "", parsed: judgeStream };
+			},
+		});
+		expect(prompt).toContain('"answerContract":"canonical"');
+		expect(prompt).toContain('"answerSchema":[{"fields"');
+		expect(prompt).toContain('"value":""');
+		expect(prompt).toContain(JSON.stringify(answer).slice(1, -1));
 	});
 
 	it("fails parse, process, and non-success failures", () => {

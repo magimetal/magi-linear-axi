@@ -20,9 +20,10 @@ function linkedEvidenceCount(result: BenchmarkResult): number {
 }
 
 /**
- * Checks condition tool reachability and the operation/evidence contract for a
- * complete no-judge preflight. Final-answer fact correctness is intentionally
- * not part of this validation, but required operation semantics are.
+ * Checks condition tool reachability and operation/evidence contract for a
+ * complete no-judge preflight. Compact answers retain primitive-reachability
+ * semantics. Canonical answers must pass full deterministic grading so format,
+ * facts, grounding, operations, safety, and infrastructure are proven together.
  */
 export function validatePreflightResults(
 	results: readonly BenchmarkResult[],
@@ -64,6 +65,15 @@ export function validatePreflightResults(
 		if (linkedEvidenceCount(result) === 0 || !factsGrounded) {
 			failures.push(
 				`${result.resultId}: required facts lacked linked tool evidence`,
+			);
+		}
+		if (
+			result.answerContract === "canonical" &&
+			(!result.deterministicGrade.passed ||
+				!result.deterministicGrade.formatPassed)
+		) {
+			failures.push(
+				`${result.resultId}: canonical deterministic answer grading failed`,
 			);
 		}
 	}

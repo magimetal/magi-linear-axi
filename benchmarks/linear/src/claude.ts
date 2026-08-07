@@ -97,17 +97,12 @@ function addUsage(target: ClaudeUsage, value: unknown): void {
 	const cacheRead = numberValue(usage.cache_read_input_tokens);
 	const cacheCreation = numberValue(usage.cache_creation_input_tokens);
 	const outputTokens = numberValue(usage.output_tokens);
-	if (inputTokens !== undefined) {
-		target.inputTokens += inputTokens;
-	}
-	if (cacheRead !== undefined) {
-		target.cacheReadInputTokens += cacheRead;
-	}
-	if (cacheCreation !== undefined) {
-		target.cacheCreationInputTokens += cacheCreation;
-	}
+	if (inputTokens !== undefined) target.inputTokens += inputTokens;
+	if (cacheRead !== undefined) target.cacheReadInputTokens += cacheRead;
+	if (cacheCreation !== undefined) target.cacheCreationInputTokens += cacheCreation;
 	if (outputTokens !== undefined) {
 		target.outputTokens += outputTokens;
+		target.outputTokensCovered = true;
 	}
 }
 
@@ -121,8 +116,14 @@ function setFinalUsage(target: ClaudeUsage, value: unknown): void {
 	];
 	for (const [targetKey, sourceKey] of fields) {
 		const number = numberValue(usage[sourceKey]);
-		if (number !== undefined) {
-			target[targetKey] = number;
+		if (number === undefined) {
+			continue;
+		}
+		if (targetKey === "outputTokens") {
+			target.outputTokens = number;
+			target.outputTokensCovered = true;
+		} else {
+			(target as unknown as Record<string, number>)[targetKey] = number;
 		}
 	}
 }
@@ -187,6 +188,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		cacheReadInputTokens: 0,
 		cacheCreationInputTokens: 0,
 		outputTokens: 0,
+		outputTokensCovered: false,
 	};
 	const toolCalls: ParsedToolCall[] = [];
 	const toolCallsById = new Map<string, ParsedToolCall>();
@@ -425,6 +427,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		turns: turns ?? assistantTexts.length,
 		...(durationMs !== undefined ? { durationMs } : {}),
 		errors,
+		terminalAnswerObserved: resultText !== undefined,
 		parseErrors,
 		terminalStatus,
 	};
@@ -661,12 +664,13 @@ export async function executeClaude(
 	}
 	processDurationMs = performance.now() - processStarted;
 
+	const rawStdout = stdout;
 	const secrets = options.redactionSecrets ?? [];
-	stdout = redactSecrets(stdout, secrets);
-	stderr = redactSecrets(stderr, secrets);
 	const parseStarted = performance.now();
-	const parsed = parseClaudeStream(stdout);
+	const parsed = parseClaudeStream(rawStdout);
 	const streamParseDurationMs = performance.now() - parseStarted;
+	stdout = redactSecrets(rawStdout, secrets);
+	stderr = redactSecrets(stderr, secrets);
 	if (result.exitCode !== undefined) {
 		parsed.exitCode = result.exitCode;
 	}

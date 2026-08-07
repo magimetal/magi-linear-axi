@@ -47,7 +47,26 @@ export LINEAR_BENCHMARK_READ_ONLY=1
 npm run snapshot -- --confirm-read-only
 ```
 
-All generated tasks across `single_step`, `multi_step`, `investigation`, and `error_recovery` share one condition-neutral compact final-answer contract. The invalid-issue task additionally requires explicit issue-scoped not-found wording. Reports include deterministic/judge agreement, counting only passed/failed judge results, alongside pass, output tokens, turns, and tool calls in Markdown and CSV. Model final answers remain intact through parsing and result persistence; secret redaction remains applied.
+### Answer-contract experiment
+
+Answer contract is orthogonal to interface condition. `compact` preserves existing condition-neutral prose/fact guidance. `canonical` uses this exact grammar in both AXI and MCP prompts:
+
+- one minified JSON object for one record;
+- one minified JSON array for multiple ordered records;
+- task-specific keys in exact specified order;
+- string values only, with literal Unicode and normal JSON escaping for quotes, backslashes, control characters, and multiline values;
+- no whitespace outside string values, preamble, prose, fences, counts, conclusions, missing fields, or extra fields; and
+- `{"error":"issue ENG-404 not found"}` for an invalid `ENG-404` lookup.
+
+Examples are `{"identifier":"ENG-10","title":"Improve query latency"}`, `{"name":"Project","status":""}` when a returned field is explicitly empty, and `[{"identifier":"ENG-10","title":"First"},{"identifier":"ENG-11","title":"Second"}]`. Generated schemas map keys to existing required-fact labels; required facts, provenance, linked operation evidence, minimum tool calls, and safety grading do not change. Empty values require explicit named empty-field tool evidence. Model output is measured and persisted byte-for-byte after secret redaction: harness does not post-process, truncate, rewrite, or convert answers. This experiment does not change production CLI output.
+
+Issue #16 phase attribution is still unavailable. Experiment remains justified because valid baseline cohort showed AXI provider output at 269.58 versus 184.96 tokens/run (+45.8%) even after linked tool-result volume fell about 63.1%. Terminal Unicode-character and UTF-8-byte metrics are exact answer-size proxies, not phase-specific token attribution; provider output tokens are reported only with explicit coverage.
+
+`matrix` and `preflight` default to both contracts. `run` requires exactly one `--answer-contract compact|canonical`; `report` accepts `compact`, `canonical`, or `all`. Cohorts require every condition × contract × task × repeat cell under same snapshot, task manifest, model, seed, repeat count, judge settings, harness fingerprint, Claude version, and AXI binary. Canonical preflight additionally requires full deterministic pass; compact retains primitive-reachability semantics.
+
+Adoption status is `adopt` only when complete AXI compact/canonical task-repeat pairs show 100% canonical deterministic pass and fact grounding, complete judge coverage without agreement loss, at least 15% lower terminal characters or covered provider output tokens, no turn/tool-call increase, and no safety, policy, command, API, tool, or infrastructure incident increase. Missing pair, judge, or both size-coverage paths yield `not_evaluable`; complete evidence that misses any gate yields `retain`. Negative results remain publishable aggregate evidence and retain compact as default.
+
+All generated tasks across `single_step`, `multi_step`, `investigation`, and `error_recovery` continue to share one condition-neutral compact final-answer contract. Invalid-issue tasks retain explicit issue-scoped not-found wording. Reports include deterministic/judge agreement, provider output tokens with covered-run counts, terminal Unicode characters/UTF-8 bytes with coverage, turns, tool calls, incidents, and adoption decision in Markdown and CSV. Model final answers remain intact through parsing and result persistence; secret redaction remains applied.
 
 Snapshot preparation captures only bounded, useful facts: viewer ID, team IDs/keys/names, issue identifiers/titles/URLs/state, selected readable comment IDs/bodies, issue relation types/identifiers/titles, and project IDs/names/URLs/status. Issue descriptions and project bodies are not captured. A workspace needs at least one readable team and issue. Projects, comments, relations, and a second issue are optional; the generator substitutes an interface-common search→view task or records an explicit warning when they are unavailable. Shared task prompts describe intent only: an exact-title issue search and, where required, a later direct retrieval. Concrete AXI command syntax appears only in the AXI condition guide; MCP guidance names typed read tools. Every issue-facing task uses the public human `issue.identifier` (for example `ENG-10`) rather than an internal UUID; project lookup intentionally keeps the project UUID because the AXI project read accepts it. The invalid-identifier task remains intentionally invalid.
 
@@ -75,6 +94,7 @@ Run one condition/task. The command appends a result and never clears unrelated 
 npm run run -- \
   --confirm-read-only \
   --condition axi \
+  --answer-contract compact \
   --task issue-lookup \
   --no-judge
 ```
@@ -85,6 +105,7 @@ The MCP equivalent is:
 npm run run -- \
   --confirm-read-only \
   --condition mcp \
+  --answer-contract canonical \
   --task issue-lookup \
   --no-judge
 ```
@@ -110,18 +131,19 @@ npm run run -- \
 
 Each timing metric stores numeric `totalMs` and event `count`; coverage lists dimensions actually observed, including valid zero-duration samples. Missing dimensions remain uncovered and do not become zero. Means divide by covered runs only. Fixed-label timing JSONL lives only below disposable per-case workspace, contains component names and non-negative integer milliseconds, and is deleted with workspace cleanup. Persisted component metadata contains numbers/coverage only. Markdown/CSV reports aggregate every component plus coverage and retry totals; they never include prompts, answers, tool-result text, workspace facts, endpoints, or credentials. Safety boundaries remain per-case: no persistent worker, shared socket, or expanded credential lifetime is introduced.
 
-A small seeded pilot across all task categories and both conditions:
+A small seeded judged pilot across all task categories, both conditions, and both contracts:
 
 ```sh
 npm run matrix -- \
   --confirm-read-only \
   --category single_step,multi_step,investigation,error_recovery \
   --repeat 1 \
-  --seed linear-pilot-1 \
-  --no-judge
+  --seed linear-pilot-1
 ```
 
-A fuller repeated matrix (omit `--no-judge` when LLM judging is desired):
+Generate pilot report and require 100% canonical deterministic pass/grounding plus no judge-agreement or incident regression before repeated cohort. `--no-judge` remains available only for local harness development, not adoption evidence.
+
+A fuller repeated judged matrix:
 
 ```sh
 npm run matrix -- \
@@ -130,9 +152,9 @@ npm run matrix -- \
   --seed linear-full-1
 ```
 
-Matrix cases are scheduled as task×repeat blocks, shuffled by the recorded seed, with the condition order randomized inside each block. Both condition cases stay adjacent for pairing, but adjacency reduces and cannot eliminate live model/service drift. Repeating the same seed and filters produces the same schedule. One run or matrix invocation gets one `matrixRunId`; pass `--run-id` to set it explicitly. Results are appended to `results/results.jsonl`; that file stores redacted final answers plus judge rationale/status and is workspace-sensitive, like the raw and snapshot artifacts. Raw redacted Claude stream JSONL is stored in `results/raw/`. Existing results are never removed by `run` or `matrix`; reports remain aggregate-only and are the shareable outputs.
+Matrix cases are scheduled as task×repeat blocks, shuffled by recorded seed, with all condition×answer-contract cells randomized but adjacent inside each block. Four default cells (`axi/compact`, `axi/canonical`, `mcp/compact`, `mcp/canonical`) remain paired; adjacency reduces but cannot eliminate live model/service drift. Repeating same seed and filters produces same schedule. One run or matrix invocation gets one `matrixRunId`; pass `--run-id` to set it explicitly. Results append to `results/results.jsonl`; file stores redacted final answers plus judge rationale/status and remains workspace-sensitive, like raw and snapshot artifacts. Raw redacted Claude stream JSONL lives in `results/raw/`. Existing results are never removed; reports remain aggregate-only shareable outputs.
 
-Before a full matrix, use the guarded primitive reachability preflight. It uses the same read-only contract, fresh snapshot/task inputs, the same AXI broker, selected filters, and one no-judge repeat per task/condition, then prints only the new `matrixRunId` and aggregate incident counts. It fails for hard safety, true infrastructure failure, missing condition-appropriate tool use, failed required-operation semantics/results, or facts without grounded linked evidence. It does not require the final prose answer to pass every fact assertion, but it does require the operation contract that makes later grading meaningful:
+Before full matrix, use guarded preflight. It uses same read-only contract, fresh snapshot/task inputs, AXI broker, selected filters, and one no-judge repeat per task/condition/contract, then prints only new `matrixRunId` and aggregate incident counts. Both contracts fail for hard safety, true infrastructure failure, missing condition-appropriate tool use, failed operation semantics/results, or facts without grounded linked evidence. Canonical cells must also pass exact format and every deterministic fact assertion; compact cells intentionally retain primitive-reachability semantics.
 
 ```sh
 npm run preflight -- \
@@ -147,11 +169,12 @@ Generate aggregate Markdown and CSV reports at any time, without network access.
 npm run report
 # Optional filters:
 npm run report -- --condition axi --category investigation
+npm run report -- --answer-contract canonical
 ```
 
-A report first selects the complete latest cohort, or the complete cohort named by `--run-id`, and validates it before applying `--task`, `--category`, or `--condition` display filters. Validation requires one matrix run ID, invariant model/seed/snapshot/task-manifest/judge/harness source/Claude fingerprint metadata, an AXI binary hash whenever AXI is in the cohort, matching expected conditions and task IDs, the expected repeat count and judge-enabled intent, exactly one result per condition/task/repeat cell, and every expected cell. Reusing an ID for a mixed or interrupted run therefore fails clearly instead of producing a partial report. A single-condition `run` is valid because its expected condition set contains only that condition. `writeReports` accepts the already selected cohort/filter result and never silently selects another cohort. Cohorts produced before these fingerprints and separate safety/error fields are conceptually invalid and should not be compared.
+A report first selects complete latest cohort, or cohort named by `--run-id`, and validates it before applying `--task`, `--category`, `--condition`, or `--answer-contract` display filters. Validation requires one matrix run ID, invariant model/seed/snapshot/task-manifest/judge/harness source/Claude fingerprint metadata, an AXI binary hash whenever AXI is present, matching expected conditions/contracts/task IDs, expected repeat count and judge intent, exactly one result per condition/contract/task/repeat cell, and every expected cell. Reusing an ID for mixed or interrupted run fails clearly instead of producing partial evidence. A single-condition, single-contract `run` remains valid because expected sets contain only selected values. Adoption is assessed from complete validated cohort before display filtering. `writeReports` never silently switches cohorts.
 
-The report includes per-condition and per-task/condition per-run means for input/output tokens, provider-reported cost, **agent wall time**, turns, and tool calls, plus p50/p95 duration and tool calls, pass rate, separate incident/run-rate columns, and aggregate component timing totals, event counts, covered-run counts, and covered-run means. Retry totals/means/coverage remain separate from timing. Primary `wallTimeMs` retains the boundary defined above. Optional `judgeWallTimeMs` and `orchestrationWallTimeMs` remain diagnostic. Incident totals and affected-run counts are separate, and run rates are capped at 100%. Policy incidents do not override correctness; hard safety and true infrastructure failures do. Ordinary command/API/tool errors affect facts and evidence but are not automatically infrastructure. Missing provider cost and component coverage are counted rather than treated as zero. Results record cohort/fingerprint metadata required for validation. Fingerprint helpers receive only bounded non-secret environment values. Reports include aggregate metrics only; they do not include snapshot contents, prompts, final answers, comment bodies, raw tool-result text, endpoints, or credentials.
+Report rows group by condition+contract and task+condition+contract. They include per-run means for input tokens, provider output tokens only across covered rows, terminal answer Unicode characters and UTF-8 bytes only across observed terminal results, provider cost, **agent wall time**, turns, and tool calls; p50/p95 duration/tool calls; pass, grounding/judge agreement; incidents; and component timing totals/counts/coverage/covered means. Missing output-token, answer-size, cost, or timing measurements stay `n/a`/uncovered, never synthetic zero. Markdown and CSV include adoption status, reasons, reductions, and metric coverage without prompts, answers, tool-result text, workspace facts, endpoints, or credentials.
 
 ## Backend details
 
@@ -175,11 +198,11 @@ This harness protects against accidental benchmark mutations and accidental cred
 - prove that the official endpoint or an agent is mutation-proof beyond the configured endpoint and observed trajectory;
 - protect a user who deliberately bypasses the harness, changes the endpoint, changes the key, or runs an untracked tool;
 - make network access safe if the key has write permission; the operator must supply a read-only key;
-- make a bounded snapshot complete for a large workspace; the snapshot warns when its limits or optional facts are reached;
-- guarantee comparable provider cost numbers when Claude Code omits or changes usage fields;
-- remove all workspace sensitivity from the gitignored snapshot, generated tasks, `results/results.jsonl`, raw JSONL, or judge artifacts; keep those files private and share aggregate reports only.
+- make a bounded snapshot complete for a large workspace; snapshot warns when limits or optional facts are reached;
+- guarantee comparable provider cost numbers when Claude Code omits or changes usage fields; or
+- remove all workspace sensitivity from gitignored snapshot, generated tasks, `results/results.jsonl`, raw JSONL, or judge artifacts.
 
-Snapshot time is excluded from measured agent wall time. Judge time is also excluded from primary agent wall time and is recorded separately when a judge runs. The benchmark compares the conditions on the same generated facts, but live Linear data can change between snapshots and runs. Use the same stable Linear workspace and a fresh snapshot. Adjacent pairing reduces but cannot eliminate live drift; use the same snapshot hash, model, seed, filters, repeat count, source hash, AXI binary hash, and Claude version when comparing results. Reports validate the full expected cohort before any display filtering, so do not reuse a `matrixRunId` across separate or partial invocations. Old cohorts lacking the corrected identifier prompts, parity guidance, separate incident counters, or invariant fingerprints must be treated as invalid rather than merged with corrected runs. Preflight checks reachability only and cannot establish factual benchmark quality.
+Snapshot time is excluded from measured agent wall time. Judge time is excluded from primary agent wall time and recorded separately when a judge runs. Benchmark compares conditions against same generated facts, but live Linear data can change between snapshots and runs. Use same stable workspace and fresh snapshot. Adjacent pairing reduces but cannot eliminate drift; keep snapshot hash, model, seed, filters, repeat count, source hash, AXI binary hash, Claude version, and judge settings invariant. Reports validate full expected cohort before display filtering, so never reuse a `matrixRunId` across separate or partial invocations. Old cohorts lacking answer-contract cells or invariant fingerprints remain invalid rather than merged. Compact preflight proves primitive reachability; canonical preflight additionally proves exact deterministic answer quality, but neither substitutes for judged pilot and repeated cohort.
 
 ## Source links and attribution
 

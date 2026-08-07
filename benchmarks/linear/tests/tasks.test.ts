@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateTasks } from "../src/tasks.js";
+import { expectedCanonicalAnswer } from "../src/answer-contract.js";
 import {
 	allDuplicateTitleSnapshot,
 	duplicateTitleSnapshot,
@@ -227,6 +228,44 @@ describe("dynamic task generation", () => {
 			});
 		});
 
+	it("generates exact canonical schemas for every rich and sparse task family", () => {
+		const rich = generateTasks(richSnapshot()).tasks;
+		const keys = (id: string) =>
+			rich
+				.find((task) => task.id === id)
+				?.canonicalAnswer?.map((record) =>
+					record.fields.map((field) => field.key),
+				);
+		expect(keys("issue-lookup")).toEqual([
+			["identifier", "title", "state", "url"],
+		]);
+		expect(keys("issue-search")).toEqual([["identifier", "title"]]);
+		expect(keys("issue-comments")).toEqual([["comment_id", "body"]]);
+		expect(keys("project-lookup")).toEqual([["name", "url", "status"]]);
+		expect(keys("relation-traversal")).toEqual([
+			["base_identifier", "type", "related_identifier", "related_title"],
+		]);
+		expect(keys("compare-issues")).toEqual([
+			["identifier", "title", "state"],
+			["identifier", "title", "state"],
+		]);
+		expect(keys("invalid-issue")).toEqual([["error"]]);
+		const invalid = rich.find((task) => task.id === "invalid-issue")!;
+		expect(expectedCanonicalAnswer(invalid)).toBe(
+			'{"error":"issue ENG-999999999 not found"}',
+		);
+
+		const sparse = generateTasks(sparseSnapshot()).tasks;
+		for (const generatedTask of [...rich, ...sparse]) {
+			expect(generatedTask.canonicalAnswer?.length).toBeGreaterThan(0);
+			expect(() => JSON.parse(expectedCanonicalAnswer(generatedTask))).not.toThrow();
+		}
+		expect(
+			sparse.find((task) => task.id === "issue-url")?.canonicalAnswer?.[0]
+				?.fields.map((field) => field.key),
+		).toEqual(["identifier", "url"]);
+	});
+
 	it("uses only the persisted confirmed-absent identifier in the invalid task", () => {
 		const snapshot = richSnapshot();
 		snapshot.confirmedAbsentIssueIdentifier = "OPS-4242";
@@ -276,6 +315,24 @@ describe("dynamic task generation", () => {
 			...richSnapshot(),
 			confirmedAbsentIssueIdentifier: "ENG-10",
 		})).toThrow(/collides with a locally captured issue/u);
+	});
+
+	it("generates a grounded canonical empty project status when snapshot returns it", () => {
+		const snapshot = richSnapshot();
+		snapshot.projects[0]!.statusName = "";
+		const project = generateTasks(snapshot).tasks.find(
+			(task) => task.id === "project-lookup",
+		);
+		expect(project?.requiredFacts).toContainEqual({
+			label: "project status",
+			kind: "contains",
+			value: "",
+		});
+		expect(project?.canonicalAnswer?.[0]?.fields).toContainEqual({
+			key: "status",
+			factLabel: "project status",
+		});
+		expect(expectedCanonicalAnswer(project!)).toContain('"status":""');
 	});
 
 	it("rejects a snapshot whose issue titles are all ambiguous", () => {

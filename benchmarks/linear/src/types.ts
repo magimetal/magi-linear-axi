@@ -1,5 +1,16 @@
 export const CONDITIONS = ["axi", "mcp"] as const;
 export type Condition = (typeof CONDITIONS)[number];
+export const ANSWER_CONTRACTS = ["compact", "canonical"] as const;
+export type AnswerContract = (typeof ANSWER_CONTRACTS)[number];
+
+export interface CanonicalAnswerField {
+	key: string;
+	factLabel: string;
+}
+
+export interface CanonicalAnswerRecord {
+	fields: CanonicalAnswerField[];
+}
 
 export const TASK_CATEGORIES = [
   "single_step",
@@ -114,6 +125,8 @@ export interface BenchmarkTask {
   requiredOperations: RequiredOperation[];
   requiredFacts: RequiredFact[];
   gradingHints: string[];
+	/** Ordered canonical answer records. Each field maps to requiredFacts by label. */
+	canonicalAnswer?: CanonicalAnswerRecord[];
 }
 
 export interface TaskManifest {
@@ -145,6 +158,7 @@ export interface ClaudeUsage {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   outputTokens: number;
+  outputTokensCovered: boolean;
   reportedCostUsd?: number;
 }
 
@@ -186,6 +200,7 @@ export type TerminalResultStatus = "success" | "non_success" | "missing";
 
 export interface ParsedClaudeStream {
   finalAnswer: string;
+  terminalAnswerObserved: boolean;
   toolCalls: ParsedToolCall[];
   toolResults: ParsedToolResult[];
   usage: ClaudeUsage;
@@ -221,10 +236,10 @@ export interface DeterministicGrade {
   passed: boolean;
   score: number;
   reason: string;
+  formatPassed: boolean;
+  formatReason?: string;
   factChecks: FactCheck[];
-  /** Full classified operation trace, including rejected help/other calls. */
   operationTrace?: ObservedOperationKind[];
-  /** Includes exact order/count, operands, and linked result semantics. */
   operationChecksPassed?: boolean;
   toolUseRequired: boolean;
   toolUseObserved: boolean;
@@ -243,6 +258,7 @@ export interface LlmGrade {
 
 export interface CohortMetadata {
   expectedConditions: Condition[];
+	expectedAnswerContracts: AnswerContract[];
   expectedTaskIds: string[];
   expectedRepeatCount: number;
   /** Whether this cohort intends to run the optional judge. */
@@ -255,12 +271,14 @@ export interface BenchmarkResult {
   resultId: string;
   matrixRunId: string;
   condition: Condition;
+	answerContract: AnswerContract;
   taskId: string;
   category: TaskCategory;
   repeatIndex: number;
   model: string;
   judgeModel: string;
   expectedConditions: Condition[];
+	expectedAnswerContracts: AnswerContract[];
   expectedTaskIds: string[];
   expectedRepeatCount: number;
   judgeEnabled: boolean;
@@ -289,6 +307,9 @@ export interface BenchmarkResult {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   outputTokens: number;
+  outputTokensCovered: boolean;
+  terminalAnswerCharacters?: number;
+  terminalAnswerBytes?: number;
   reportedCostUsd?: number;
   turns: number;
   toolCalls: number;
@@ -331,6 +352,7 @@ export interface ResultFilters {
   taskIds?: string[];
   categories?: TaskCategory[];
   conditions?: Condition[];
+	answerContracts?: AnswerContract[];
   matrixRunId?: string;
   matrixRunIds?: string[];
 }
