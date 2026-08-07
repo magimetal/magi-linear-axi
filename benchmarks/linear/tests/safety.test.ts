@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { parseAxiArgv } from "../src/axi-argv.js";
+import { validateAxiBrokerArgv } from "../src/broker.js";
+import { classifyOperations } from "../src/operations.js";
 import {
 	requestLinearGraphql,
 	assertQueryOnly,
@@ -112,33 +115,25 @@ describe("layered live contract and trajectory scanner", () => {
 	});
 
 	it("extracts the command field, requires the resolved binary, and allows documented reads", () => {
+		const binary = "/tmp/bin/magi-linear-axi";
 		const safe = [
-			{
-				name: "Bash",
-				kind: "bash" as const,
-				input: {
-					command: "/tmp/bin/magi-linear-axi issue query --search=update",
-				},
-			},
-			{
-				name: "Bash",
-				kind: "bash" as const,
-				input: {
-					command: "/tmp/bin/magi-linear-axi issue relation list ENG-10",
-				},
-			},
-			{
-				name: "Bash",
-				kind: "bash" as const,
-				input: { command: "/tmp/bin/magi-linear-axi auth whoami" },
-			},
-			{
-				name: "Bash",
-				kind: "bash" as const,
-				input: { command: "/tmp/bin/magi-linear-axi --help" },
-			},
-		];
-		expect(scanSafety("axi", safe, "/tmp/bin/magi-linear-axi")).toHaveLength(0);
+			`${binary} issue view ENG-10 --fields compact`,
+			`${binary} issue query --search=update --fields compact`,
+			`${binary} issue comment list ENG-10 --fields compact --limit=10`,
+			`${binary} issue relation list ENG-10 --fields compact --limit=10`,
+			`${binary} project view project-1 --fields compact`,
+			`${binary} auth whoami`,
+			`${binary} --help`,
+		].map((command) => ({
+			name: "Bash",
+			kind: "bash" as const,
+			input: { command },
+		}));
+		expect(scanSafety("axi", safe, binary)).toHaveLength(0);
+		expect(scanAudit("axi", safe, binary)).toEqual({
+			safetyViolations: [],
+			policyIncidents: [],
+		});
 		expect(
 			scanSafety(
 				"axi",
@@ -159,12 +154,60 @@ describe("layered live contract and trajectory scanner", () => {
 					{
 						name: "Bash",
 						kind: "bash",
-						input: { command: "magi-linear-axi issue query --search=update" },
+						input: { command: "magi-linear-axi issue query --search=update --fields compact" },
 					},
 				],
 				"/tmp/bin/magi-linear-axi",
 			),
 		).toHaveLength(1);
+	});
+
+	it("keeps parser, broker, classifier, and audit aligned for compact argv", () => {
+		const binary = "/tmp/bin/magi-linear-axi";
+		const valid = [
+			{ argv: ["issue", "view", "ENG-10", "--fields", "compact"], kind: "issue_view" },
+			{ argv: ["issue", "query", "--search=update", "--fields", "compact"], kind: "issue_search" },
+			{ argv: ["issue", "comment", "list", "ENG-10", "--fields", "compact", "--limit=10"], kind: "other" },
+			{ argv: ["issue", "relation", "list", "ENG-10", "--fields", "compact", "--limit=10"], kind: "other" },
+			{ argv: ["project", "view", "project-1", "--fields", "compact"], kind: "other" },
+			{ argv: ["auth", "whoami"], kind: "other" },
+			{ argv: ["--help"], kind: "help" },
+			{ argv: ["issue", "comment", "list", "--help"], kind: "help" },
+		] as const;
+		for (const { argv, kind } of valid) {
+			expect(parseAxiArgv(argv).ok, argv.join(" ")).toBe(true);
+			expect(() => validateAxiBrokerArgv(argv), argv.join(" ")).not.toThrow();
+			const command = `${binary} ${argv.join(" ")}`;
+			expect(classifyOperations("axi", [{ id: "call", name: "Bash", kind: "bash", input: { command } }], binary)[0]?.kind).toBe(kind);
+			expect(scanAudit("axi", [{ name: "Bash", kind: "bash", input: { command } }], binary)).toEqual({
+				safetyViolations: [],
+				policyIncidents: [],
+			});
+		}
+
+		const invalid = [
+			[],
+			["issue", "view", "ENG-10"],
+			["issue", "comment", "list", "ENG-10"],
+			["issue", "comment", "list", "ENG-10", "--full"],
+			["issue", "comment", "list", "ENG-10", "--fields", "compact", "--limit=9"],
+			["issue", "relation", "list", "ENG-10", "--fields", "full", "--limit=10"],
+			["auth", "whoami", "--full"],
+			["issue", "view", "ENG-10", "--fields", "compact", "--fields", "compact"],
+			["issue", "query", "--search=update", "--fields", "compact", "--limit=10"],
+			["unknown", "--help"],
+			["issue", "view", "ENG-10", "--help"],
+			["project", "view", "project-1", "--help"],
+		] as const;
+		for (const argv of invalid) {
+			expect(parseAxiArgv(argv).ok, argv.join(" ")).toBe(false);
+			expect(() => validateAxiBrokerArgv(argv), argv.join(" ")).toThrow();
+			const command = [binary, ...argv].join(" ");
+			expect(classifyOperations("axi", [{ id: "call", name: "Bash", kind: "bash", input: { command } }], binary)[0]?.kind).toBe("other");
+			const audit = scanAudit("axi", [{ name: "Bash", kind: "bash", input: { command } }], binary);
+			expect(audit.safetyViolations, argv.join(" ")).toHaveLength(0);
+			expect(audit.policyIncidents, argv.join(" ")).toHaveLength(1);
+		}
 	});
 
 	it("rejects every explicit endpoint flag, including the official endpoint", () => {
@@ -226,7 +269,7 @@ describe("layered live contract and trajectory scanner", () => {
 				kind: "bash" as const,
 				input: { command },
 			})),
-			"/tmp/bin/magi-linear-axi",
+				binary,
 		);
 		expect(audit.safetyViolations).toHaveLength(commands.length);
 		expect(audit.policyIncidents).toHaveLength(0);

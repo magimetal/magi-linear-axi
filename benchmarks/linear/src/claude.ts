@@ -10,6 +10,9 @@ import type {
 	ParsedClaudeStream,
 	ParsedToolCall,
 	ParsedToolResult,
+	PhaseKey,
+	PhaseMetrics,
+	PhaseSize,
 } from "./types.js";
 
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -91,7 +94,11 @@ function toolKind(name: string): ParsedToolCall["kind"] {
 	return "other";
 }
 
-function addUsage(target: ClaudeUsage, value: unknown): void {
+function addUsage(
+	target: ClaudeUsage,
+	coverage: { outputTokens: boolean },
+	value: unknown,
+): void {
 	const usage = objectValue(value);
 	const inputTokens = numberValue(usage.input_tokens);
 	const cacheRead = numberValue(usage.cache_read_input_tokens);
@@ -102,30 +109,94 @@ function addUsage(target: ClaudeUsage, value: unknown): void {
 	if (cacheCreation !== undefined) target.cacheCreationInputTokens += cacheCreation;
 	if (outputTokens !== undefined) {
 		target.outputTokens += outputTokens;
+		coverage.outputTokens = true;
 		target.outputTokensCovered = true;
 	}
 }
 
-function setFinalUsage(target: ClaudeUsage, value: unknown): void {
+function setFinalUsage(
+	target: ClaudeUsage,
+	coverage: { outputTokens: boolean },
+	value: unknown,
+): void {
 	const usage = objectValue(value);
-	const fields: Array<[keyof ClaudeUsage, string]> = [
-		["inputTokens", "input_tokens"],
-		["cacheReadInputTokens", "cache_read_input_tokens"],
-		["cacheCreationInputTokens", "cache_creation_input_tokens"],
-		["outputTokens", "output_tokens"],
-	];
-	for (const [targetKey, sourceKey] of fields) {
-		const number = numberValue(usage[sourceKey]);
-		if (number === undefined) {
-			continue;
+	const inputTokens = numberValue(usage.input_tokens);
+	const cacheRead = numberValue(usage.cache_read_input_tokens);
+	const cacheCreation = numberValue(usage.cache_creation_input_tokens);
+	const outputTokens = numberValue(usage.output_tokens);
+	if (inputTokens !== undefined) target.inputTokens = inputTokens;
+	if (cacheRead !== undefined) target.cacheReadInputTokens = cacheRead;
+	if (cacheCreation !== undefined) target.cacheCreationInputTokens = cacheCreation;
+	if (outputTokens !== undefined) {
+		target.outputTokens = outputTokens;
+		target.outputTokensCovered = true;
+		coverage.outputTokens = true;
+	}
+}
+
+function phaseSize(text: string): PhaseSize {
+	return {
+		codePoints: [...text].length,
+		utf8Bytes: Buffer.byteLength(text, "utf8"),
+	};
+}
+
+function buildPhaseMetrics(options: {
+	toolCalls: readonly ParsedToolCall[];
+	toolArgumentsMalformed: boolean;
+	toolResults: readonly ParsedToolResult[];
+	toolResultsMalformed: boolean;
+	assistantMessages: readonly string[];
+	deltaText?: string;
+	terminalText?: string;
+	thinkingText?: string;
+	streamMalformed: boolean;
+}): PhaseMetrics {
+	const metrics: PhaseMetrics = { coverage: [] };
+	const add = (key: PhaseKey, text: string | undefined): void => {
+		if (text === undefined) return;
+		metrics[key] = phaseSize(text);
+		metrics.coverage.push(key);
+	};
+	if (options.streamMalformed) return metrics;
+
+	if (!options.toolArgumentsMalformed && options.toolCalls.length > 0) {
+		add(
+			"assistantToolArguments",
+			options.toolCalls.map((call) => JSON.stringify(call.input) ?? "").join(""),
+		);
+	}
+
+	if (options.terminalText !== undefined) {
+		const messages = [...options.assistantMessages];
+		let duplicateIndex = -1;
+		for (let index = messages.length - 1; index >= 0; index -= 1) {
+			if (messages[index] === options.terminalText) {
+				duplicateIndex = index;
+				break;
+			}
 		}
-		if (targetKey === "outputTokens") {
-			target.outputTokens = number;
-			target.outputTokensCovered = true;
-		} else {
-			(target as unknown as Record<string, number>)[targetKey] = number;
+		if (duplicateIndex >= 0) messages.splice(duplicateIndex, 1);
+		let preterminal = messages.join("");
+		if (!preterminal && options.deltaText?.endsWith(options.terminalText)) {
+			preterminal = options.deltaText.slice(0, -options.terminalText.length);
+		}
+		add("visibleAssistantTextBeforeTerminal", preterminal);
+		add("terminalAnswerText", options.terminalText);
+	}
+
+	add("thinkingReasoning", options.thinkingText);
+
+	if (!options.toolResultsMalformed && options.toolResults.length > 0) {
+		const toolIds = new Set(
+			options.toolCalls.flatMap((call) => call.id ? [call.id] : []),
+		);
+		const linked = options.toolResults.filter((result) => toolIds.has(result.toolUseId));
+		if (linked.length > 0) {
+			add("linkedToolResultText", linked.map((result) => result.text).join(""));
 		}
 	}
+	return metrics;
 }
 
 function mergeInputs(existing: unknown, incoming: unknown): unknown {
@@ -190,13 +261,16 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		outputTokens: 0,
 		outputTokensCovered: false,
 	};
+	const usageCoverage = { outputTokens: false };
 	const toolCalls: ParsedToolCall[] = [];
 	const toolCallsById = new Map<string, ParsedToolCall>();
 	const pendingInputJson = new Map<string, string>();
 	const toolBlockIds = new Map<number, string>();
 	const toolResultsById = new Map<string, ParsedToolResult>();
-	const assistantTexts: string[] = [];
+	const assistantMessages: string[] = [];
 	const deltaTexts: string[] = [];
+	const completeThinkingTexts: string[] = [];
+	const deltaThinkingTexts: string[] = [];
 	const errors: string[] = [];
 	let parseErrors = 0;
 	let resultText: string | undefined;
@@ -207,6 +281,9 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 	let resultUsage: unknown;
 	let resultCost: number | undefined;
 	let lastToolBlockId: string | undefined;
+	let toolArgumentsMalformed = false;
+	let toolResultsMalformed = false;
+	let streamMalformed = false;
 
 	const addTool = (item: Record<string, unknown>): void => {
 		const name = textValue(item.name);
@@ -226,6 +303,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 			return;
 		}
 		if (!name) {
+			toolArgumentsMalformed = true;
 			if (id) {
 				parseErrors += 1;
 				errors.push("Claude Code emitted a tool use without a name");
@@ -263,6 +341,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		const partialJson = textValue(delta.partial_json);
 		if (!partialJson || !id) {
 			if (!id && partialJson) {
+				toolArgumentsMalformed = true;
 				parseErrors += 1;
 				errors.push("Claude Code emitted an input delta without a tool use id");
 			}
@@ -285,6 +364,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 	const addToolResult = (item: Record<string, unknown>): void => {
 		const result = parsedToolResult(item);
 		if (!result) {
+			toolResultsMalformed = true;
 			parseErrors += 1;
 			errors.push("Claude Code emitted a malformed tool result");
 			return;
@@ -308,28 +388,58 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		let event: Record<string, unknown>;
 		try {
 			const parsed: unknown = JSON.parse(line);
-			event = objectValue(parsed);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				streamMalformed = true;
+				parseErrors += 1;
+				continue;
+			}
+			event = parsed as Record<string, unknown>;
 		} catch {
+			streamMalformed = true;
 			parseErrors += 1;
 			continue;
 		}
 		const eventType = textValue(event.type);
 		const message = objectValue(event.message);
-		addUsage(usage, message.usage);
-		addUsage(usage, event.usage);
+		if (
+			eventType === "assistant" &&
+			!Array.isArray(message.content) &&
+			!Array.isArray(event.content)
+		) {
+			streamMalformed = true;
+			parseErrors += 1;
+		}
+		addUsage(usage, usageCoverage, message.usage);
+		addUsage(usage, usageCoverage, event.usage);
 
-		for (const item of contentFromMessage(event)) {
+		const items = contentFromMessage(event);
+		let assistantMessageText: string | undefined;
+		for (const item of items) {
 			const itemType = textValue(item.type);
 			if (itemType === "tool_use") {
 				addTool(item);
 			} else if (itemType === "tool_result") {
 				addToolResult(item);
-			} else if (itemType === "text") {
+			} else if (eventType === "assistant" && itemType === "text") {
 				const text = textValue(item.text);
-				if (text) {
-					assistantTexts.push(text);
+				if (text === undefined) {
+					streamMalformed = true;
+					parseErrors += 1;
+				} else {
+					assistantMessageText = `${assistantMessageText ?? ""}${text}`;
+				}
+			} else if (eventType === "assistant" && itemType === "thinking") {
+				const thinking = textValue(item.thinking) ?? textValue(item.text);
+				if (thinking === undefined) {
+					streamMalformed = true;
+					parseErrors += 1;
+				} else {
+					completeThinkingTexts.push(thinking);
 				}
 			}
+		}
+		if (assistantMessageText !== undefined) {
+			assistantMessages.push(assistantMessageText);
 		}
 
 		if (eventType === "stream_event") {
@@ -338,51 +448,58 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 			const index = numberValue(streamEvent.index);
 			if (streamType === "content_block_start") {
 				const contentBlock = objectValue(streamEvent.content_block);
-				if (textValue(contentBlock.type) === "tool_use") {
+				const blockType = textValue(contentBlock.type);
+				if (blockType === "tool_use") {
 					const id = textValue(contentBlock.id);
-					if (id && index !== undefined) {
-						toolBlockIds.set(index, id);
-					}
+					if (id && index !== undefined) toolBlockIds.set(index, id);
 					addTool(contentBlock);
+				} else if (blockType === "thinking") {
+					const thinking = textValue(contentBlock.thinking);
+					if (thinking !== undefined) completeThinkingTexts.push(thinking);
 				}
 			} else if (streamType === "content_block_delta") {
 				const delta = objectValue(streamEvent.delta);
-				const text = textValue(delta.text);
-				if (text) {
-					deltaTexts.push(text);
-				}
-				if (textValue(delta.type) === "input_json_delta") {
+				const deltaType = textValue(delta.type);
+				if (deltaType === "thinking_delta") {
+					const thinking = textValue(delta.thinking);
+					if (thinking === undefined) {
+						streamMalformed = true;
+						parseErrors += 1;
+					} else {
+						deltaThinkingTexts.push(thinking);
+					}
+				} else if (deltaType === "input_json_delta") {
 					addToolInputDelta(streamEvent);
+				} else {
+					const text = textValue(delta.text);
+					if (deltaType === "text_delta" && text === undefined) {
+						streamMalformed = true;
+						parseErrors += 1;
+					} else if (text !== undefined) {
+						deltaTexts.push(text);
+					}
 				}
 			}
 		}
 
-		if (eventType === "tool_use") {
-			addTool(event);
-		}
-		if (eventType === "tool_result") {
-			addToolResult(event);
-		}
+		if (eventType === "tool_use") addTool(event);
+		if (eventType === "tool_result") addToolResult(event);
 		if (eventType === "result") {
 			resultEvents += 1;
 			const result = event.result;
 			if (typeof result === "string") {
 				resultText = result;
+			} else {
+				streamMalformed = true;
+				parseErrors += 1;
 			}
 			resultUsage = event.usage;
 			const eventTurns = numberValue(event.num_turns);
-			if (eventTurns !== undefined) {
-				turns = eventTurns;
-			}
+			if (eventTurns !== undefined) turns = eventTurns;
 			const eventDuration = numberValue(event.duration_ms);
-			if (eventDuration !== undefined) {
-				durationMs = eventDuration;
-			}
-			const cost =
-				numberValue(event.total_cost_usd) ?? numberValue(event.cost_usd);
-			if (cost !== undefined) {
-				resultCost = cost;
-			}
+			if (eventDuration !== undefined) durationMs = eventDuration;
+			const cost = numberValue(event.total_cost_usd) ?? numberValue(event.cost_usd);
+			if (cost !== undefined) resultCost = cost;
 			const subtype = textValue(event.subtype);
 			if (resultEvents === 1) {
 				terminalStatus = subtype === "success" ? "success" : "non_success";
@@ -403,33 +520,50 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 	}
 
 	if (pendingInputJson.size > 0) {
+		toolArgumentsMalformed = true;
 		parseErrors += pendingInputJson.size;
 		errors.push("Claude Code ended with incomplete tool input JSON");
 	}
 	if (resultUsage !== undefined) {
-		setFinalUsage(usage, resultUsage);
+		setFinalUsage(usage, usageCoverage, resultUsage);
 	}
-	if (resultCost !== undefined) {
-		usage.reportedCostUsd = resultCost;
-	}
+	if (resultCost !== undefined) usage.reportedCostUsd = resultCost;
 	if (resultEvents > 1) {
+		streamMalformed = true;
 		terminalStatus = "non_success";
 		errors.push("Claude Code emitted multiple result events");
 	}
-	const finalAnswer =
-		resultText ??
-		(deltaTexts.length > 0 ? deltaTexts.join("") : assistantTexts.join("\n"));
+	const finalAnswer = resultText ??
+		(deltaTexts.length > 0 ? deltaTexts.join("") : assistantMessages.join("\n"));
+	const parsedToolResults = [...toolResultsById.values()];
+	const thinkingText = completeThinkingTexts.length > 0
+		? completeThinkingTexts.join("")
+		: deltaThinkingTexts.length > 0
+			? deltaThinkingTexts.join("")
+			: undefined;
 	return {
 		finalAnswer,
 		toolCalls,
-		toolResults: [...toolResultsById.values()],
+		toolResults: parsedToolResults,
 		usage,
-		turns: turns ?? assistantTexts.length,
+		usageCoverage,
+		phaseMetrics: buildPhaseMetrics({
+			toolCalls,
+			toolArgumentsMalformed,
+			toolResults: parsedToolResults,
+			toolResultsMalformed,
+			assistantMessages,
+			...(deltaTexts.length > 0 ? { deltaText: deltaTexts.join("") } : {}),
+			...(resultText !== undefined ? { terminalText: resultText } : {}),
+			...(thinkingText !== undefined ? { thinkingText } : {}),
+			streamMalformed,
+		}),
+		turns: turns ?? assistantMessages.length,
 		...(durationMs !== undefined ? { durationMs } : {}),
 		errors,
-		terminalAnswerObserved: resultText !== undefined,
 		parseErrors,
 		terminalStatus,
+		terminalAnswerObserved: resultText !== undefined,
 	};
 }
 
@@ -633,11 +767,13 @@ export async function executeClaude(
 						POST_KILL_GRACE_MS,
 					);
 				}, timeoutMs);
-				child.stdout?.on("data", (chunk: Buffer) => {
-					stdout += chunk.toString("utf8");
+				child.stdout?.setEncoding("utf8");
+				child.stderr?.setEncoding("utf8");
+				child.stdout?.on("data", (chunk: string) => {
+					stdout += chunk;
 				});
-				child.stderr?.on("data", (chunk: Buffer) => {
-					stderr += chunk.toString("utf8");
+				child.stderr?.on("data", (chunk: string) => {
+					stderr += chunk;
 				});
 				child.once("error", (error) => {
 					if (timedOut) {
@@ -663,14 +799,14 @@ export async function executeClaude(
 		result = {};
 	}
 	processDurationMs = performance.now() - processStarted;
-
-	const rawStdout = stdout;
 	const secrets = options.redactionSecrets ?? [];
 	const parseStarted = performance.now();
-	const parsed = parseClaudeStream(rawStdout);
-	const streamParseDurationMs = performance.now() - parseStarted;
-	stdout = redactSecrets(rawStdout, secrets);
+	const rawPhaseMetrics = parseClaudeStream(stdout).phaseMetrics;
+	stdout = redactSecrets(stdout, secrets);
 	stderr = redactSecrets(stderr, secrets);
+	const parsed = parseClaudeStream(stdout);
+	parsed.phaseMetrics = rawPhaseMetrics;
+	const streamParseDurationMs = performance.now() - parseStarted;
 	if (result.exitCode !== undefined) {
 		parsed.exitCode = result.exitCode;
 	}

@@ -114,7 +114,7 @@ describe("benchmark case isolation and cohorts", () => {
     expect(axiPrompt).not.toContain(`${binary} issue create`);
     // Benchmark metadata: fixture chars and heuristic chars/4 token estimate.
     expect({ characters: axiPrompt.length, estimatedTokens: Math.ceil(axiPrompt.length / 4) })
-      .toEqual({ characters: 1_173, estimatedTokens: 294 });
+      .toEqual({ characters: 1_288, estimatedTokens: 322 });
     expect(axiPrompt.length).toBeLessThan(1_383);
     const mcpPrompt = buildTaskPrompt(task, "mcp", binary);
     expect(mcpPrompt).toBe([
@@ -516,7 +516,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
         execute: async (options) => {
           workspace = options.cwd;
           const wrapper = options.axiBin ?? "";
-          const invocation = await runProgram(wrapper, ["--format", "json", "issue", "view", "ENG-1"]);
+          const invocation = await runProgram(wrapper, ["--format", "json", "issue", "view", "ENG-1", "--fields", "compact"]);
           expect(invocation.code).toBe(0);
           expect(invocation.stderr).toContain("retrying Linear request");
           const timingText = await readFile(join(options.cwd, "timing.jsonl"), "utf8");

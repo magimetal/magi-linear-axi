@@ -153,6 +153,32 @@ export interface ParsedToolResult {
   isError: boolean;
 }
 
+
+export interface PhaseSize {
+  codePoints: number;
+  utf8Bytes: number;
+}
+
+export const PHASE_KEYS = [
+  "assistantToolArguments",
+  "visibleAssistantTextBeforeTerminal",
+  "terminalAnswerText",
+  "thinkingReasoning",
+  "linkedToolResultText",
+] as const;
+export type PhaseKey = (typeof PHASE_KEYS)[number];
+export interface PhaseMetrics {
+  assistantToolArguments?: PhaseSize;
+  visibleAssistantTextBeforeTerminal?: PhaseSize;
+  terminalAnswerText?: PhaseSize;
+  thinkingReasoning?: PhaseSize;
+  linkedToolResultText?: PhaseSize;
+  coverage: PhaseKey[];
+}
+
+export interface UsageCoverage {
+  outputTokens: boolean;
+}
 export interface ClaudeUsage {
   inputTokens: number;
   cacheReadInputTokens: number;
@@ -201,6 +227,8 @@ export type TerminalResultStatus = "success" | "non_success" | "missing";
 export interface ParsedClaudeStream {
   finalAnswer: string;
   terminalAnswerObserved: boolean;
+  usageCoverage: UsageCoverage;
+  phaseMetrics: PhaseMetrics;
   toolCalls: ParsedToolCall[];
   toolResults: ParsedToolResult[];
   usage: ClaudeUsage;
@@ -301,6 +329,7 @@ export interface BenchmarkResult {
   harnessSourceHash?: string;
   /** SHA-256 of the resolved AXI executable when the cohort includes AXI. */
   axiBinaryHash?: string;
+  phaseMetrics: PhaseMetrics;
   /** Bounded output of the exact Claude executable's --version command. */
   claudeVersion?: string;
   inputTokens: number;

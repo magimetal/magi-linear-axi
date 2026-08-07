@@ -83,6 +83,10 @@ describe("report aggregation", () => {
     expect(aggregate.passed).toBe(1);
     expect(aggregate.byCondition.map((row) => row.key)).toEqual(["axi/compact", "mcp/compact"]);
     expect(aggregate.byTask).toHaveLength(2);
+    expect(aggregate.byCategory.map((row) => row.key)).toEqual([
+      "axi/single_step",
+      "mcp/single_step",
+    ]);
     expect(aggregate.byCondition.find((row) => row.condition === "axi")?.meanWallTimeMs).toBe(1000);
     expect(aggregate.wallTimeMs).toBe(4000);
     expect(aggregate.byCondition.find((row) => row.condition === "mcp")?.meanToolCalls).toBe(3);
@@ -99,6 +103,120 @@ describe("report aggregation", () => {
     expect(csv).not.toContain("secret dynamic answer");
   });
 
+
+  it("aggregates phase proxies with explicit coverage by condition and category", () => {
+    const coveredZero = result({
+      phaseMetrics: {
+        terminalAnswerText: { codePoints: 0, utf8Bytes: 0 },
+        coverage: ["terminalAnswerText"],
+      },
+    });
+    const unavailable = result({
+      resultId: "unavailable",
+      repeatIndex: 2,
+      outputTokensCovered: false,
+      phaseMetrics: { coverage: [] },
+    });
+    const aggregate = aggregateResults([coveredZero, unavailable]);
+    expect(aggregate.phaseSizes.terminalAnswerText).toEqual({
+      totalCodePoints: 0,
+      totalUtf8Bytes: 0,
+      coveredRuns: 1,
+      meanCodePoints: 0,
+      meanUtf8Bytes: 0,
+    });
+    expect(aggregate.phaseSizes.thinkingReasoning).toEqual({
+      totalCodePoints: 0,
+      totalUtf8Bytes: 0,
+      coveredRuns: 0,
+    });
+    expect(aggregate.outputTokensCoveredRuns).toBe(1);
+    expect(aggregate.meanOutputTokens).toBe(20);
+    expect(aggregate.byCategory[0]?.key).toBe("axi/single_step");
+    const markdown = renderMarkdownReport([coveredZero, unavailable], aggregate);
+    const csv = renderCsvReport(aggregate);
+    expect(markdown).toContain("terminalAnswerText | 0 | 0 | 0 | 0 | 1/2");
+    expect(markdown).toContain("thinkingReasoning | n/a | n/a | n/a | n/a | 0/2");
+    expect(markdown).toContain("Phase sizes by condition and task category");
+    expect(csv).toContain("terminal_answer_text_mean_code_points");
+    expect(csv).toContain("category,,single_step,axi");
+    expect(csv).toContain("n/a");
+  });
+
+  it("reports largest fully covered phase delta and keeps aggregate reports content-free", () => {
+    const canaries = [
+      "RAW_PROMPT_CANARY",
+      "ANSWER_CANARY",
+      "TOOL_ARGUMENT_CANARY",
+      "TOOL_RESULT_CANARY",
+      "WORKSPACE_ID_CANARY",
+      "WORKSPACE_VALUE_CANARY",
+    ];
+    const axi = result({
+      finalAnswer: `${canaries[0]} ${canaries[1]}`,
+      rawPath: canaries[4],
+      deterministicGrade: {
+        ...result().deterministicGrade,
+        reason: `${canaries[2]} ${canaries[3]}`,
+      },
+      llmGrade: {
+        status: "passed",
+        model: "judge",
+        rationale: canaries[5],
+        output: canaries.join(" "),
+      },
+      phaseMetrics: {
+        assistantToolArguments: { codePoints: 30, utf8Bytes: 30 },
+        terminalAnswerText: { codePoints: 40, utf8Bytes: 40 },
+        linkedToolResultText: { codePoints: 100, utf8Bytes: 100 },
+        coverage: [
+          "assistantToolArguments",
+          "terminalAnswerText",
+          "linkedToolResultText",
+        ],
+      },
+    });
+    const mcp = result({
+      resultId: "mcp",
+      condition: "mcp",
+      mcpToolCalls: 1,
+      bashToolCalls: 0,
+      phaseMetrics: {
+        assistantToolArguments: { codePoints: 10, utf8Bytes: 10 },
+        terminalAnswerText: { codePoints: 35, utf8Bytes: 35 },
+        linkedToolResultText: { codePoints: 1, utf8Bytes: 1 },
+        coverage: [
+          "assistantToolArguments",
+          "terminalAnswerText",
+          "linkedToolResultText",
+        ],
+      },
+    });
+    const aggregate = aggregateResults([axi, mcp]);
+    const markdown = renderMarkdownReport([axi, mcp], aggregate);
+    const csv = renderCsvReport(aggregate);
+    expect(markdown).toContain(
+      "Largest fully covered measurable generated-phase AXI−MCP delta (compact): assistantToolArguments (20 Unicode code points/run)",
+    );
+    expect(markdown).toContain("linkedToolResultText` is subsequent input");
+    for (const canary of canaries) {
+      expect(JSON.stringify(aggregate)).not.toContain(canary);
+      expect(markdown).not.toContain(canary);
+      expect(csv).not.toContain(canary);
+    }
+  });
+
+  it("renders missing provider output usage as n/a instead of zero", () => {
+    const missing = result({
+      outputTokens: 0,
+      outputTokensCovered: false,
+      phaseMetrics: { coverage: [] },
+    });
+    const aggregate = aggregateResults([missing]);
+    expect(aggregate.meanOutputTokens).toBeUndefined();
+    expect(renderMarkdownReport([missing], aggregate)).toContain("n/a (0/1)");
+    expect(renderCsvReport(aggregate)).toContain(",n/a,0,");
+  });
   it("reports deterministic/judge agreement and excludes skipped or error judges", () => {
     const results = [
       result({ llmGrade: { status: "passed", model: "judge" } }),
@@ -314,7 +432,9 @@ describe("report aggregation", () => {
     expect(headerCells.filter((cell) => cell === "answer_contract")).toHaveLength(1);
     for (const row of rows) {
       expect(row.split(",")).toHaveLength(headerCells.length);
-      expect(row.split(",")[headerCells.indexOf("answer_contract")]).toBe("compact");
+      if (row.split(",")[headerCells.indexOf("row_scope")] === "task") {
+        expect(row.split(",")[headerCells.indexOf("answer_contract")]).toBe("compact");
+      }
       expect(row.split(",")[headerCells.indexOf("condition")]).toBe("axi");
       expect(row.split(",")[headerCells.indexOf("mean_output_tokens")]).toBe("");
     }
@@ -323,7 +443,7 @@ describe("report aggregation", () => {
   it("preserves established CSV columns before appending contract metrics", () => {
     const [header] = renderCsvReport(aggregateResults([result()])).trim().split("\n");
     const columns = header!.split(",");
-    const established = "task_id,category,condition,runs,passes,pass_rate,deterministic_passes,llm_passes,llm_considered,judge_agreement,judge_agreement_considered,judge_agreement_rate,safety_violations,unsafe_runs,safety_rate,hard_safety_incidents,hard_safety_runs,hard_safety_rate,policy_incidents,policy_incident_runs,policy_incident_rate,command_errors,command_error_runs,command_error_rate,api_errors,api_error_runs,api_error_rate,other_tool_errors,other_tool_error_runs,other_tool_error_rate,infrastructure_errors,infrastructure_error_runs,infrastructure_error_rate,expected_errors,expected_error_runs,expected_error_rate,errors,error_runs,error_rate,mean_input_tokens,mean_cache_read_input_tokens,mean_cache_creation_input_tokens,mean_output_tokens,mean_reported_cost_usd,reported_cost_samples,missing_cost_count,mean_wall_time_ms,p50_wall_time_ms,p95_wall_time_ms,mean_turns,mean_tool_calls,p50_tool_calls,p95_tool_calls".split(",");
+    const established = "row_scope,task_id,category,condition,runs,passes,pass_rate,deterministic_passes,llm_passes,llm_considered,judge_agreement,judge_agreement_considered,judge_agreement_rate,safety_violations,unsafe_runs,safety_rate,hard_safety_incidents,hard_safety_runs,hard_safety_rate,policy_incidents,policy_incident_runs,policy_incident_rate,command_errors,command_error_runs,command_error_rate,api_errors,api_error_runs,api_error_rate,other_tool_errors,other_tool_error_runs,other_tool_error_rate,infrastructure_errors,infrastructure_error_runs,infrastructure_error_rate,expected_errors,expected_error_runs,expected_error_rate,errors,error_runs,error_rate,mean_input_tokens,mean_cache_read_input_tokens,mean_cache_creation_input_tokens,mean_output_tokens,output_tokens_covered_runs,mean_reported_cost_usd,reported_cost_samples,missing_cost_count,mean_wall_time_ms,p50_wall_time_ms,p95_wall_time_ms,mean_turns,mean_tool_calls,p50_tool_calls,p95_tool_calls".split(",");
     expect(columns.slice(0, established.length)).toEqual(established);
     expect(columns.indexOf("answer_contract")).toBeGreaterThan(
       columns.indexOf("retry_covered_runs"),

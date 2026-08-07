@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { COMPONENT_TIMING_METRIC_KEYS, MAX_COMPONENT_EVENT_COUNT, MAX_COMPONENT_TIMING_MS } from "./types.js";
+import { COMPONENT_TIMING_METRIC_KEYS, MAX_COMPONENT_EVENT_COUNT, MAX_COMPONENT_TIMING_MS, PHASE_KEYS } from "./types.js";
 import type {
 	AnswerContract,
 	BenchmarkResult,
@@ -9,6 +9,7 @@ import type {
 	ResultFilters,
 	TaskCategory,
 	ComponentTimingMetricKey,
+	PhaseKey,
 } from "./types.js";
 
 export interface AggregateRow {
@@ -60,7 +61,7 @@ export interface AggregateRow {
 	cacheReadInputTokens: number;
 	cacheCreationInputTokens: number;
 	outputTokens: number;
-	outputTokenCoveredRuns: number;
+	outputTokensCoveredRuns: number;
 	terminalAnswerCharacters: number;
 	terminalAnswerCharacterCoveredRuns: number;
 	terminalAnswerBytes: number;
@@ -70,6 +71,7 @@ export interface AggregateRow {
 	missingCostCount: number;
 	wallTimeMs: number;
 	componentTimings: Record<ComponentTimingMetricKey, ComponentTimingAggregate>;
+	phaseSizes: Record<PhaseKey, PhaseSizeAggregate>;
 	retries: number;
 	retryCoveredRuns: number;
 	meanRetries?: number;
@@ -79,9 +81,9 @@ export interface AggregateRow {
 	meanCacheReadInputTokens: number;
 	meanCacheCreationInputTokens: number;
 	meanOutputTokens?: number;
+	meanReportedCostUsd?: number;
 	meanTerminalAnswerCharacters?: number;
 	meanTerminalAnswerBytes?: number;
-	meanReportedCostUsd?: number;
 	meanWallTimeMs: number;
 	p50WallTimeMs: number;
 	p95WallTimeMs: number;
@@ -99,8 +101,17 @@ export interface ComponentTimingAggregate {
 	meanMs?: number;
 }
 
+export interface PhaseSizeAggregate {
+	totalCodePoints: number;
+	totalUtf8Bytes: number;
+	coveredRuns: number;
+	meanCodePoints?: number;
+	meanUtf8Bytes?: number;
+}
+
 export type ReportAggregate = Omit<AggregateRow, "key"> & {
 	byCondition: AggregateRow[];
+	byCategory: AggregateRow[];
 	byTask: AggregateRow[];
 };
 
@@ -132,7 +143,7 @@ interface Totals {
 	cacheReadInputTokens: number;
 	cacheCreationInputTokens: number;
 	outputTokens: number;
-	outputTokenCoveredRuns: number;
+	outputTokensCoveredRuns: number;
 	terminalAnswerCharacters: number;
 	terminalAnswerCharacterCoveredRuns: number;
 	terminalAnswerBytes: number;
@@ -143,6 +154,7 @@ interface Totals {
 	wallTimeMs: number;
 	turns: number;
 	toolCalls: number;
+	phaseSizes: Record<PhaseKey, PhaseSizeAggregate>;
 	componentTimings: Record<ComponentTimingMetricKey, ComponentTimingAggregate>;
 	retries: number;
 	retryCoveredRuns: number;
@@ -183,7 +195,7 @@ function newTotals(): Totals {
 		cacheReadInputTokens: 0,
 		cacheCreationInputTokens: 0,
 		outputTokens: 0,
-		outputTokenCoveredRuns: 0,
+		outputTokensCoveredRuns: 0,
 		terminalAnswerCharacters: 0,
 		terminalAnswerCharacterCoveredRuns: 0,
 		terminalAnswerBytes: 0,
@@ -195,6 +207,7 @@ function newTotals(): Totals {
 		componentTimings: Object.fromEntries(
 			COMPONENT_TIMING_METRIC_KEYS.map((key) => [key, { totalMs: 0, eventCount: 0, coveredRuns: 0 }]),
 		) as Record<ComponentTimingMetricKey, ComponentTimingAggregate>,
+		phaseSizes: Object.fromEntries(PHASE_KEYS.map((key) => [key, { totalCodePoints: 0, totalUtf8Bytes: 0, coveredRuns: 0 }])) as Record<PhaseKey, PhaseSizeAggregate>,
 		retries: 0,
 		retryCoveredRuns: 0,
 		turns: 0,
@@ -253,17 +266,37 @@ function addResult(totals: Totals, result: BenchmarkResult): void {
 	totals.inputTokens += numeric(result.inputTokens);
 	totals.cacheReadInputTokens += numeric(result.cacheReadInputTokens);
 	totals.cacheCreationInputTokens += numeric(result.cacheCreationInputTokens);
-	if (result.outputTokensCovered) {
+	if (result.outputTokensCovered === true) {
 		totals.outputTokens += numeric(result.outputTokens);
-		totals.outputTokenCoveredRuns += 1;
+		totals.outputTokensCoveredRuns += 1;
 	}
-	if (result.terminalAnswerCharacters !== undefined && Number.isFinite(result.terminalAnswerCharacters)) {
+	if (
+		result.terminalAnswerCharacters !== undefined &&
+		Number.isFinite(result.terminalAnswerCharacters)
+	) {
 		totals.terminalAnswerCharacters += result.terminalAnswerCharacters;
 		totals.terminalAnswerCharacterCoveredRuns += 1;
 	}
-	if (result.terminalAnswerBytes !== undefined && Number.isFinite(result.terminalAnswerBytes)) {
+	if (
+		result.terminalAnswerBytes !== undefined &&
+		Number.isFinite(result.terminalAnswerBytes)
+	) {
 		totals.terminalAnswerBytes += result.terminalAnswerBytes;
 		totals.terminalAnswerByteCoveredRuns += 1;
+	}
+	for (const key of PHASE_KEYS) {
+		const metric = result.phaseMetrics?.[key];
+		if (
+			result.phaseMetrics?.coverage.includes(key) &&
+			metric &&
+			Number.isInteger(metric.codePoints) && metric.codePoints >= 0 &&
+			Number.isInteger(metric.utf8Bytes) && metric.utf8Bytes >= 0
+		) {
+			const aggregate = totals.phaseSizes[key];
+			aggregate.totalCodePoints += metric.codePoints;
+			aggregate.totalUtf8Bytes += metric.utf8Bytes;
+			aggregate.coveredRuns += 1;
+		}
 	}
 	if (result.reportedCostUsd !== undefined && Number.isFinite(result.reportedCostUsd)) {
 		totals.reportedCostUsd += result.reportedCostUsd;
@@ -274,7 +307,9 @@ function addResult(totals: Totals, result: BenchmarkResult): void {
 	totals.wallTimeMs += numeric(result.wallTimeMs);
 	for (const key of COMPONENT_TIMING_METRIC_KEYS) {
 		const metric = result.componentTiming?.[key];
-		if (metric && Number.isFinite(metric.totalMs) && metric.totalMs >= 0 && metric.totalMs <= MAX_COMPONENT_TIMING_MS && Number.isInteger(metric.count) && metric.count > 0 && metric.count <= MAX_COMPONENT_EVENT_COUNT) {
+		if (metric && Number.isFinite(metric.totalMs) && metric.totalMs >= 0 &&
+			metric.totalMs <= MAX_COMPONENT_TIMING_MS && Number.isInteger(metric.count) &&
+			metric.count > 0 && metric.count <= MAX_COMPONENT_EVENT_COUNT) {
 			const aggregate = totals.componentTimings[key];
 			aggregate.totalMs += metric.totalMs;
 			aggregate.eventCount += metric.count;
@@ -319,51 +354,121 @@ function finishRow(
 	metadata?: Pick<AggregateRow, "taskId" | "category" | "condition" | "answerContract">,
 ): AggregateRow {
 	const row: AggregateRow = {
-		key, runs: totals.runs, passed: totals.passed,
-		deterministicPassed: totals.deterministicPassed, llmPassed: totals.llmPassed,
-		llmConsidered: totals.llmConsidered, judgeAgreement: totals.judgeAgreement,
+		key,
+		runs: totals.runs,
+		passed: totals.passed,
+		deterministicPassed: totals.deterministicPassed,
+		llmPassed: totals.llmPassed,
+		llmConsidered: totals.llmConsidered,
+		judgeAgreement: totals.judgeAgreement,
 		judgeAgreementConsidered: totals.judgeAgreementConsidered,
 		judgeAgreementRate: rate(totals.judgeAgreement, totals.judgeAgreementConsidered),
-		safetyViolations: totals.safetyViolations, unsafeRuns: totals.unsafeRuns,
-		safetyRate: rate(totals.unsafeRuns, totals.runs), hardSafetyIncidents: totals.safetyViolations,
-		hardSafetyRuns: totals.unsafeRuns, hardSafetyRate: rate(totals.unsafeRuns, totals.runs),
-		policyIncidents: totals.policyIncidents, policyIncidentRuns: totals.policyIncidentRuns,
-		policyIncidentRate: rate(totals.policyIncidentRuns, totals.runs), commandErrors: totals.commandErrors,
-		commandErrorRuns: totals.commandErrorRuns, commandErrorRate: rate(totals.commandErrorRuns, totals.runs),
-		apiErrors: totals.apiErrors, apiErrorRuns: totals.apiErrorRuns, apiErrorRate: rate(totals.apiErrorRuns, totals.runs),
-		toolErrors: totals.toolErrors, toolErrorRuns: totals.toolErrorRuns, toolErrorRate: rate(totals.toolErrorRuns, totals.runs),
-		otherToolErrors: totals.toolErrors, otherToolErrorRuns: totals.toolErrorRuns, otherToolErrorRate: rate(totals.toolErrorRuns, totals.runs),
-		infrastructureErrors: totals.infrastructureErrors, infrastructureErrorRuns: totals.infrastructureErrorRuns,
-		infrastructureErrorRate: rate(totals.infrastructureErrorRuns, totals.runs), expectedErrors: totals.expectedErrors,
-		expectedErrorRuns: totals.expectedErrorRuns, expectedErrorRate: rate(totals.expectedErrorRuns, totals.runs),
-		errors: totals.errors, errorRuns: totals.errorRuns, errorRate: rate(totals.errorRuns, totals.runs),
-		inputTokens: totals.inputTokens, cacheReadInputTokens: totals.cacheReadInputTokens,
-		cacheCreationInputTokens: totals.cacheCreationInputTokens, outputTokens: totals.outputTokens,
-		outputTokenCoveredRuns: totals.outputTokenCoveredRuns, terminalAnswerCharacters: totals.terminalAnswerCharacters,
-		terminalAnswerCharacterCoveredRuns: totals.terminalAnswerCharacterCoveredRuns, terminalAnswerBytes: totals.terminalAnswerBytes,
-		terminalAnswerByteCoveredRuns: totals.terminalAnswerByteCoveredRuns, reportedCostUsd: totals.reportedCostUsd,
-		reportedCostSamples: totals.reportedCostSamples, missingCostCount: totals.missingCostCount,
-		wallTimeMs: totals.wallTimeMs, turns: totals.turns, toolCalls: totals.toolCalls,
-		componentTimings: Object.fromEntries(COMPONENT_TIMING_METRIC_KEYS.map((metricKey) => {
-			const metric = totals.componentTimings[metricKey];
-			return [metricKey, { ...metric, ...(metric.coveredRuns > 0 ? { meanMs: metric.totalMs / metric.coveredRuns } : {}) }];
-		})) as Record<ComponentTimingMetricKey, ComponentTimingAggregate>,
-		retries: totals.retries, retryCoveredRuns: totals.retryCoveredRuns,
+		safetyViolations: totals.safetyViolations,
+		unsafeRuns: totals.unsafeRuns,
+		safetyRate: rate(totals.unsafeRuns, totals.runs),
+		hardSafetyIncidents: totals.safetyViolations,
+		hardSafetyRuns: totals.unsafeRuns,
+		hardSafetyRate: rate(totals.unsafeRuns, totals.runs),
+		policyIncidents: totals.policyIncidents,
+		policyIncidentRuns: totals.policyIncidentRuns,
+		policyIncidentRate: rate(totals.policyIncidentRuns, totals.runs),
+		commandErrors: totals.commandErrors,
+		commandErrorRuns: totals.commandErrorRuns,
+		commandErrorRate: rate(totals.commandErrorRuns, totals.runs),
+		apiErrors: totals.apiErrors,
+		apiErrorRuns: totals.apiErrorRuns,
+		apiErrorRate: rate(totals.apiErrorRuns, totals.runs),
+		toolErrors: totals.toolErrors,
+		toolErrorRuns: totals.toolErrorRuns,
+		toolErrorRate: rate(totals.toolErrorRuns, totals.runs),
+		otherToolErrors: totals.toolErrors,
+		otherToolErrorRuns: totals.toolErrorRuns,
+		otherToolErrorRate: rate(totals.toolErrorRuns, totals.runs),
+		infrastructureErrors: totals.infrastructureErrors,
+		infrastructureErrorRuns: totals.infrastructureErrorRuns,
+		infrastructureErrorRate: rate(totals.infrastructureErrorRuns, totals.runs),
+		expectedErrors: totals.expectedErrors,
+		expectedErrorRuns: totals.expectedErrorRuns,
+		expectedErrorRate: rate(totals.expectedErrorRuns, totals.runs),
+		errors: totals.errors,
+		errorRuns: totals.errorRuns,
+		errorRate: rate(totals.errorRuns, totals.runs),
+		inputTokens: totals.inputTokens,
+		cacheReadInputTokens: totals.cacheReadInputTokens,
+		cacheCreationInputTokens: totals.cacheCreationInputTokens,
+		outputTokens: totals.outputTokens,
+		reportedCostUsd: totals.reportedCostUsd,
+		reportedCostSamples: totals.reportedCostSamples,
+		missingCostCount: totals.missingCostCount,
+		wallTimeMs: totals.wallTimeMs,
+		turns: totals.turns,
+		toolCalls: totals.toolCalls,
+		outputTokensCoveredRuns: totals.outputTokensCoveredRuns,
+		terminalAnswerCharacters: totals.terminalAnswerCharacters,
+		terminalAnswerCharacterCoveredRuns:
+			totals.terminalAnswerCharacterCoveredRuns,
+		terminalAnswerBytes: totals.terminalAnswerBytes,
+		terminalAnswerByteCoveredRuns: totals.terminalAnswerByteCoveredRuns,
+		componentTimings: Object.fromEntries(
+			COMPONENT_TIMING_METRIC_KEYS.map((key) => {
+				const metric = totals.componentTimings[key];
+				return [key, { ...metric, ...(metric.coveredRuns > 0 ? { meanMs: metric.totalMs / metric.coveredRuns } : {}) }];
+			}),
+		) as Record<ComponentTimingMetricKey, ComponentTimingAggregate>,
+		phaseSizes: Object.fromEntries(PHASE_KEYS.map((key) => {
+			const metric = totals.phaseSizes[key];
+			return [key, { ...metric, ...(metric.coveredRuns > 0 ? { meanCodePoints: metric.totalCodePoints / metric.coveredRuns, meanUtf8Bytes: metric.totalUtf8Bytes / metric.coveredRuns } : {}) }];
+		})) as Record<PhaseKey, PhaseSizeAggregate>,
+		retries: totals.retries,
+		retryCoveredRuns: totals.retryCoveredRuns,
 		...(totals.retryCoveredRuns > 0 ? { meanRetries: totals.retries / totals.retryCoveredRuns } : {}),
-		meanInputTokens: mean(totals.inputTokens, totals.runs), meanCacheReadInputTokens: mean(totals.cacheReadInputTokens, totals.runs),
+		meanInputTokens: mean(totals.inputTokens, totals.runs),
+		meanCacheReadInputTokens: mean(totals.cacheReadInputTokens, totals.runs),
 		meanCacheCreationInputTokens: mean(totals.cacheCreationInputTokens, totals.runs),
-		...(totals.outputTokenCoveredRuns > 0 ? { meanOutputTokens: totals.outputTokens / totals.outputTokenCoveredRuns } : {}),
-		...(totals.terminalAnswerCharacterCoveredRuns > 0 ? { meanTerminalAnswerCharacters: totals.terminalAnswerCharacters / totals.terminalAnswerCharacterCoveredRuns } : {}),
-		...(totals.terminalAnswerByteCoveredRuns > 0 ? { meanTerminalAnswerBytes: totals.terminalAnswerBytes / totals.terminalAnswerByteCoveredRuns } : {}),
-		...(totals.reportedCostSamples > 0 ? { meanReportedCostUsd: totals.reportedCostUsd / totals.reportedCostSamples } : {}),
-		meanWallTimeMs: mean(totals.wallTimeMs, totals.runs), p50WallTimeMs: percentile(totals.durations, 0.5),
-		p95WallTimeMs: percentile(totals.durations, 0.95), meanTurns: mean(totals.turns, totals.runs), meanToolCalls: mean(totals.toolCalls, totals.runs),
-		p50ToolCalls: percentile(totals.toolCallValues, 0.5), p95ToolCalls: percentile(totals.toolCallValues, 0.95), passRate: rate(totals.passed, totals.runs),
+		...(totals.outputTokensCoveredRuns > 0
+			? { meanOutputTokens: totals.outputTokens / totals.outputTokensCoveredRuns }
+			: {}),
+		...(totals.terminalAnswerCharacterCoveredRuns > 0
+			? {
+					meanTerminalAnswerCharacters:
+						totals.terminalAnswerCharacters /
+						totals.terminalAnswerCharacterCoveredRuns,
+				}
+			: {}),
+		...(totals.terminalAnswerByteCoveredRuns > 0
+			? {
+					meanTerminalAnswerBytes:
+						totals.terminalAnswerBytes /
+						totals.terminalAnswerByteCoveredRuns,
+				}
+			: {}),
+		...(totals.reportedCostSamples > 0
+			? {
+					meanReportedCostUsd:
+						totals.reportedCostUsd / totals.reportedCostSamples,
+				}
+			: {}),
+		meanWallTimeMs: mean(totals.wallTimeMs, totals.runs),
+		p50WallTimeMs: percentile(totals.durations, 0.5),
+		p95WallTimeMs: percentile(totals.durations, 0.95),
+		meanTurns: mean(totals.turns, totals.runs),
+		meanToolCalls: mean(totals.toolCalls, totals.runs),
+		p50ToolCalls: percentile(totals.toolCallValues, 0.5),
+		p95ToolCalls: percentile(totals.toolCallValues, 0.95),
+		passRate: totals.runs === 0 ? 0 : totals.passed / totals.runs,
 	};
-	if (metadata?.taskId) row.taskId = metadata.taskId;
-	if (metadata?.category) row.category = metadata.category;
-	if (metadata?.condition) row.condition = metadata.condition;
-	if (metadata?.answerContract) row.answerContract = metadata.answerContract;
+	if (metadata?.taskId) {
+		row.taskId = metadata.taskId;
+	}
+	if (metadata?.category) {
+		row.category = metadata.category;
+	}
+	if (metadata?.condition) {
+		row.condition = metadata.condition;
+	}
+	if (metadata?.answerContract) {
+		row.answerContract = metadata.answerContract;
+	}
 	return row;
 }
 
@@ -381,9 +486,21 @@ export function filterResults(
 		if (filters.conditions && !filters.conditions.includes(result.condition)) {
 			return false;
 		}
-		if (filters.answerContracts && !filters.answerContracts.includes(result.answerContract)) return false;
-		if (filters.matrixRunId && filters.matrixRunId !== result.matrixRunId) return false;
-		if (filters.matrixRunIds && !filters.matrixRunIds.includes(result.matrixRunId)) return false;
+		if (
+			filters.answerContracts &&
+			!filters.answerContracts.includes(result.answerContract)
+		) {
+			return false;
+		}
+		if (filters.matrixRunId && filters.matrixRunId !== result.matrixRunId) {
+			return false;
+		}
+		if (
+			filters.matrixRunIds &&
+			!filters.matrixRunIds.includes(result.matrixRunId)
+		) {
+			return false;
+		}
 		return true;
 	});
 }
@@ -424,14 +541,19 @@ function normalizedList(values: readonly string[]): string[] {
 	return [...values].sort((left, right) => left.localeCompare(right));
 }
 
-function cohortMetadata(result: BenchmarkResult, index: number): CohortMetadata {
+function cohortMetadata(
+	result: BenchmarkResult,
+	index: number,
+): CohortMetadata {
 	const conditions = result.expectedConditions;
 	const contracts = result.expectedAnswerContracts;
 	const taskIds = result.expectedTaskIds;
 	if (
 		!Array.isArray(conditions) ||
 		conditions.length === 0 ||
-		conditions.some((value) => value !== "axi" && value !== "mcp") ||
+		conditions.some(
+			(condition) => condition !== "axi" && condition !== "mcp",
+		) ||
 		new Set(conditions).size !== conditions.length
 	) {
 		throw new Error(
@@ -441,7 +563,9 @@ function cohortMetadata(result: BenchmarkResult, index: number): CohortMetadata 
 	if (
 		!Array.isArray(contracts) ||
 		contracts.length === 0 ||
-		contracts.some((value) => value !== "compact" && value !== "canonical") ||
+		contracts.some(
+			(contract) => contract !== "compact" && contract !== "canonical",
+		) ||
 		new Set(contracts).size !== contracts.length
 	) {
 		throw new Error(
@@ -451,7 +575,9 @@ function cohortMetadata(result: BenchmarkResult, index: number): CohortMetadata 
 	if (
 		!Array.isArray(taskIds) ||
 		taskIds.length === 0 ||
-		taskIds.some((value) => typeof value !== "string" || value.length === 0) ||
+		taskIds.some(
+			(taskId) => typeof taskId !== "string" || taskId.length === 0,
+		) ||
 		new Set(taskIds).size !== taskIds.length
 	) {
 		throw new Error(
@@ -485,8 +611,7 @@ function sameMetadata(left: CohortMetadata, right: CohortMetadata): boolean {
 		left.expectedRepeatCount === right.expectedRepeatCount &&
 		left.judgeEnabled === right.judgeEnabled &&
 		left.expectedConditions.join(",") === right.expectedConditions.join(",") &&
-		left.expectedAnswerContracts.join(",") ===
-			right.expectedAnswerContracts.join(",") &&
+		left.expectedAnswerContracts.join(",") === right.expectedAnswerContracts.join(",") &&
 		left.expectedTaskIds.join(",") === right.expectedTaskIds.join(",")
 	);
 }
@@ -516,6 +641,7 @@ function invariantValue(result: BenchmarkResult, label: string): unknown {
 	}
 }
 
+/** Validates the complete, unfiltered set of expected cells for one matrix run. */
 export function validateCohort(
 	results: readonly BenchmarkResult[],
 ): ValidatedCohort {
@@ -540,8 +666,11 @@ export function validateCohort(
 		["harness source hash", first.harnessSourceHash],
 		["Claude version", first.claudeVersion],
 	];
-	if (metadata.expectedConditions.includes("axi") && !first.axiBinaryHash) {
-		throw new Error("cohort validation failed: result 1 is missing AXI binary hash");
+	const binaryHashRequired = metadata.expectedConditions.includes("axi");
+	if (binaryHashRequired && !first.axiBinaryHash) {
+		throw new Error(
+			"cohort validation failed: result 1 is missing AXI binary hash",
+		);
 	}
 	if (first.axiBinaryHash !== undefined) {
 		invariantStrings.push(["AXI binary hash", first.axiBinaryHash]);
@@ -552,7 +681,8 @@ export function validateCohort(
 		}
 	}
 	for (const [index, result] of results.entries()) {
-		if (!sameMetadata(metadata, cohortMetadata(result, index))) {
+		const currentMetadata = cohortMetadata(result, index);
+		if (!sameMetadata(metadata, currentMetadata)) {
 			throw new Error(
 				`cohort validation failed: result ${index + 1} has mixed expected cohort metadata`,
 			);
@@ -575,17 +705,22 @@ export function validateCohort(
 				);
 			}
 		}
-		if ((result.harnessCommit ?? undefined) !== (first.harnessCommit ?? undefined)) {
+		if (
+			(result.harnessCommit ?? undefined) !== (first.harnessCommit ?? undefined)
+		) {
 			throw new Error(
 				`cohort validation failed: harness commit differs at result ${index + 1}`,
 			);
 		}
-		if ((result.axiBinaryHash ?? undefined) !== (first.axiBinaryHash ?? undefined)) {
+		if (
+			(result.axiBinaryHash ?? undefined) !== (first.axiBinaryHash ?? undefined)
+		) {
 			throw new Error(
 				`cohort validation failed: AXI binary hash differs at result ${index + 1}`,
 			);
 		}
 	}
+
 	const expectedCells = new Set<string>();
 	for (const condition of metadata.expectedConditions) {
 		for (const answerContract of metadata.expectedAnswerContracts) {
@@ -639,7 +774,9 @@ export function validateCohort(
 		}
 		categories.set(result.taskId, result.category);
 	}
-	const missingCells = [...expectedCells].filter((cell) => !seenCells.has(cell));
+	const missingCells = [...expectedCells].filter(
+		(cell) => !seenCells.has(cell),
+	);
 	if (missingCells.length > 0) {
 		throw new Error(
 			`cohort validation failed: missing expected cell(s): ${missingCells.join(", ")}`,
@@ -671,38 +808,108 @@ export function selectCohort(
 	return validateCohort(selected);
 }
 
-export function aggregateResults(results: readonly BenchmarkResult[]): ReportAggregate {
+export function aggregateResults(
+	results: readonly BenchmarkResult[],
+): ReportAggregate {
 	const totals = newTotals();
-	const conditionTotals = new Map<string, { totals: Totals; condition: Condition; answerContract: AnswerContract }>();
-	const taskTotals = new Map<string, { totals: Totals; category: TaskCategory; condition: Condition; answerContract: AnswerContract; taskId: string }>();
+	const conditionTotals = new Map<
+		string,
+		{ totals: Totals; condition: Condition; answerContract: AnswerContract }
+	>();
+	const taskTotals = new Map<
+		string,
+		{
+			totals: Totals;
+			category: TaskCategory;
+			condition: Condition;
+			answerContract: AnswerContract;
+			taskId: string;
+		}
+	>();
+	const categoryTotals = new Map<string, { totals: Totals; category: TaskCategory; condition: Condition; answerContract: AnswerContract }>();
 	for (const result of results) {
 		addResult(totals, result);
 		const conditionKey = `${result.condition}/${result.answerContract}`;
-		const condition = conditionTotals.get(conditionKey) ?? { totals: newTotals(), condition: result.condition, answerContract: result.answerContract };
+		const condition = conditionTotals.get(conditionKey) ?? {
+			totals: newTotals(),
+			condition: result.condition,
+			answerContract: result.answerContract,
+		};
 		addResult(condition.totals, result);
 		conditionTotals.set(conditionKey, condition);
 		const taskKey = `${conditionKey}/${result.taskId}`;
-		const task = taskTotals.get(taskKey) ?? { totals: newTotals(), category: result.category, condition: result.condition, answerContract: result.answerContract, taskId: result.taskId };
+		const task = taskTotals.get(taskKey) ?? {
+			totals: newTotals(),
+			category: result.category,
+			condition: result.condition,
+			answerContract: result.answerContract,
+			taskId: result.taskId,
+		};
 		addResult(task.totals, result);
 		taskTotals.set(taskKey, task);
+		const categoryKey = `${result.condition}/${result.category}/${result.answerContract}`;
+		const category = categoryTotals.get(categoryKey) ?? { totals: newTotals(), category: result.category, condition: result.condition, answerContract: result.answerContract };
+		addResult(category.totals, result);
+		categoryTotals.set(categoryKey, category);
 	}
-	const byCondition = [...conditionTotals.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => finishRow(key, value.totals, { condition: value.condition, answerContract: value.answerContract }));
-	const byTask = [...taskTotals.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => finishRow(key, value.totals, { taskId: value.taskId, category: value.category, condition: value.condition, answerContract: value.answerContract }));
+	const byCondition = [...conditionTotals.entries()]
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([key, value]) =>
+			finishRow(key, value.totals, {
+				condition: value.condition,
+				answerContract: value.answerContract,
+			}),
+		);
+	const byTask = [...taskTotals.entries()]
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([key, value]) =>
+			finishRow(key, value.totals, {
+				taskId: value.taskId,
+				category: value.category,
+				condition: value.condition,
+				answerContract: value.answerContract,
+			}),
+		);
+	const byCategory = [...categoryTotals.entries()]
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([key, value]) => finishRow(key.endsWith(`/${value.answerContract}`) ? key.slice(0, -value.answerContract.length - 1) : key, value.totals, {
+			category: value.category,
+			condition: value.condition,
+			answerContract: value.answerContract,
+		}));
 	const total = finishRow("total", totals);
 	const { key: _key, ...summary } = total;
-	return { ...summary, byCondition, byTask };
+	return { ...summary, byCondition, byTask, byCategory };
 }
-export async function readResults(filePath: string): Promise<BenchmarkResult[]> {
+
+export async function readResults(
+	filePath: string,
+): Promise<BenchmarkResult[]> {
 	let content: string;
-	try { content = await readFile(filePath, "utf8"); } catch (error: unknown) {
-		if (error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT") return [];
+	try {
+		content = await readFile(filePath, "utf8");
+	} catch (error: unknown) {
+		const code =
+			error && typeof error === "object"
+				? (error as { code?: unknown }).code
+				: undefined;
+		if (code === "ENOENT") {
+			return [];
+		}
 		throw error;
 	}
 	const results: BenchmarkResult[] = [];
 	for (const [index, line] of content.split(/\r?\n/u).entries()) {
-		if (!line.trim()) continue;
-		try { results.push(JSON.parse(line) as BenchmarkResult); }
-		catch { throw new Error(`results file contains invalid JSON on line ${index + 1}`); }
+		if (!line.trim()) {
+			continue;
+		}
+		try {
+			results.push(JSON.parse(line) as BenchmarkResult);
+		} catch {
+			throw new Error(
+				`results file contains invalid JSON on line ${index + 1}`,
+			);
+		}
 	}
 	return results;
 }
@@ -737,12 +944,12 @@ function incidentCell(
 	return `${count} / ${affectedRuns} (${percent(rateValue)})`;
 }
 
-function coveredMean(value: number | undefined, coveredRuns: number, runs: number): string {
-	return `${value === undefined ? "n/a" : fixed(value)} (${coveredRuns}/${runs})`;
+function outputTokenMean(row: AggregateRow): string {
+	return row.meanOutputTokens === undefined ? "n/a" : fixed(row.meanOutputTokens);
 }
 
 function rowMarkdown(row: AggregateRow): string {
-	return `| ${row.key} | ${row.runs} | ${row.passed} | ${percent(row.passRate)} | ${row.deterministicPassed} | ${row.llmPassed}/${row.llmConsidered} | ${row.judgeAgreement}/${row.judgeAgreementConsidered} (${percent(row.judgeAgreementRate)}) | ${incidentCell(row.safetyViolations, row.unsafeRuns, row.safetyRate)} | ${incidentCell(row.policyIncidents, row.policyIncidentRuns, row.policyIncidentRate)} | ${incidentCell(row.commandErrors, row.commandErrorRuns, row.commandErrorRate)} | ${incidentCell(row.apiErrors, row.apiErrorRuns, row.apiErrorRate)} | ${incidentCell(row.otherToolErrors, row.otherToolErrorRuns, row.otherToolErrorRate)} | ${incidentCell(row.infrastructureErrors, row.infrastructureErrorRuns, row.infrastructureErrorRate)} | ${incidentCell(row.expectedErrors, row.expectedErrorRuns, row.expectedErrorRate)} | ${incidentCell(row.errors, row.errorRuns, row.errorRate)} | ${fixed(row.meanInputTokens)} | ${fixed(row.meanCacheReadInputTokens)} | ${fixed(row.meanCacheCreationInputTokens)} | ${coveredMean(row.meanOutputTokens, row.outputTokenCoveredRuns, row.runs)} | ${coveredMean(row.meanTerminalAnswerCharacters, row.terminalAnswerCharacterCoveredRuns, row.runs)} | ${coveredMean(row.meanTerminalAnswerBytes, row.terminalAnswerByteCoveredRuns, row.runs)} | ${costMean(row)} (${row.reportedCostSamples}/${row.runs}) | ${fixed(row.meanWallTimeMs)} | ${fixed(row.p50WallTimeMs)}/${fixed(row.p95WallTimeMs)} | ${fixed(row.meanTurns)} | ${fixed(row.meanToolCalls)} | ${fixed(row.p50ToolCalls)}/${fixed(row.p95ToolCalls)} |`;
+	return `| ${row.key} | ${row.runs} | ${row.passed} | ${percent(row.passRate)} | ${row.deterministicPassed} | ${row.llmPassed}/${row.llmConsidered} | ${row.judgeAgreement}/${row.judgeAgreementConsidered} (${percent(row.judgeAgreementRate)}) | ${incidentCell(row.safetyViolations, row.unsafeRuns, row.safetyRate)} | ${incidentCell(row.policyIncidents, row.policyIncidentRuns, row.policyIncidentRate)} | ${incidentCell(row.commandErrors, row.commandErrorRuns, row.commandErrorRate)} | ${incidentCell(row.apiErrors, row.apiErrorRuns, row.apiErrorRate)} | ${incidentCell(row.otherToolErrors, row.otherToolErrorRuns, row.otherToolErrorRate)} | ${incidentCell(row.infrastructureErrors, row.infrastructureErrorRuns, row.infrastructureErrorRate)} | ${incidentCell(row.expectedErrors, row.expectedErrorRuns, row.expectedErrorRate)} | ${incidentCell(row.errors, row.errorRuns, row.errorRate)} | ${fixed(row.meanInputTokens)} | ${fixed(row.meanCacheReadInputTokens)} | ${fixed(row.meanCacheCreationInputTokens)} | ${outputTokenMean(row)} (${row.outputTokensCoveredRuns}/${row.runs}) | ${row.meanTerminalAnswerCharacters === undefined ? "n/a" : fixed(row.meanTerminalAnswerCharacters)} (${row.terminalAnswerCharacterCoveredRuns}/${row.runs}) | ${row.meanTerminalAnswerBytes === undefined ? "n/a" : fixed(row.meanTerminalAnswerBytes)} (${row.terminalAnswerByteCoveredRuns}/${row.runs}) | ${costMean(row)} (${row.reportedCostSamples}/${row.runs}) | ${fixed(row.meanWallTimeMs)} | ${fixed(row.p50WallTimeMs)}/${fixed(row.p95WallTimeMs)} | ${fixed(row.meanTurns)} | ${fixed(row.meanToolCalls)} | ${fixed(row.p50ToolCalls)}/${fixed(row.p95ToolCalls)} |`;
 }
 
 function componentMarkdownRows(rows: readonly AggregateRow[]): string[] {
@@ -754,9 +961,131 @@ function componentMarkdownRows(rows: readonly AggregateRow[]): string[] {
 		`| ${row.key} | retries | ${row.retries} | ${row.meanRetries === undefined ? "n/a" : fixed(row.meanRetries)} | ${row.retryCoveredRuns}/${row.runs} | n/a |`,
 	]);
 }
+function phaseMarkdownRows(rows: readonly AggregateRow[]): string[] {
+	return rows.flatMap((row) => PHASE_KEYS.map((key) => {
+		const metric = row.phaseSizes[key];
+		const totalCodePoints = metric.coveredRuns === 0 ? "n/a" : String(metric.totalCodePoints);
+		const totalUtf8Bytes = metric.coveredRuns === 0 ? "n/a" : String(metric.totalUtf8Bytes);
+		const label = row.answerContract ? `${row.key} (${row.answerContract})` : row.key;
+		return `| ${label} | ${key} | ${totalCodePoints} | ${metric.meanCodePoints === undefined ? "n/a" : fixed(metric.meanCodePoints)} | ${totalUtf8Bytes} | ${metric.meanUtf8Bytes === undefined ? "n/a" : fixed(metric.meanUtf8Bytes)} | ${metric.coveredRuns}/${row.runs} |`;
+	}));
+}
+
+const GENERATED_PHASE_KEYS: readonly PhaseKey[] = [
+	"assistantToolArguments",
+	"visibleAssistantTextBeforeTerminal",
+	"terminalAnswerText",
+	"thinkingReasoning",
+];
+
+export interface CanonicalAdoptionAssessment {
+	status: "adopt" | "retain" | "not_evaluable";
+	reasons: string[];
+	terminalCharacterReduction?: number;
+	outputTokenReduction?: number;
+}
+
+function attributionSummary(aggregate: ReportAggregate): string {
+	const contracts = [...new Set(aggregate.byCondition.map((row) => row.answerContract).filter((value): value is AnswerContract => value !== undefined))].sort();
+	const summaries = contracts.flatMap((contract) => {
+		const axi = aggregate.byCondition.find((row) => row.condition === "axi" && row.answerContract === contract);
+		const mcp = aggregate.byCondition.find((row) => row.condition === "mcp" && row.answerContract === contract);
+		if (!axi || !mcp) return [];
+		const candidates = GENERATED_PHASE_KEYS.flatMap((key) => {
+			const axiMetric = axi.phaseSizes[key];
+			const mcpMetric = mcp.phaseSizes[key];
+			if (axiMetric.coveredRuns !== axi.runs || mcpMetric.coveredRuns !== mcp.runs || axiMetric.meanCodePoints === undefined || mcpMetric.meanCodePoints === undefined) return [];
+			return [{ key, delta: axiMetric.meanCodePoints - mcpMetric.meanCodePoints }];
+		});
+		if (candidates.length === 0) return [`Per-contract phase attribution (${contract}): n/a; provider-only or uncovered phase accounting prevents attribution.`];
+		const largest = candidates.sort((left, right) => right.delta - left.delta)[0]!;
+		return [`Largest fully covered measurable generated-phase AXI−MCP delta (${contract}): ${largest.key} (${fixed(largest.delta)} Unicode code points/run). Provider output tokens remain exact provider totals; phase sizes are proxies, not token attribution.`];
+	});
+	return summaries.length > 0 ? summaries.join("\n") : "Per-contract phase attribution: n/a; both AXI and MCP conditions are required.";
+
+}
+export function assessCanonicalAdoption(
+	results: readonly BenchmarkResult[],
+): CanonicalAdoptionAssessment {
+	const axiResults = results.filter((result) => result.condition === "axi");
+	const first = axiResults[0];
+	if (!first) return { status: "not_evaluable", reasons: ["cohort has no AXI results"] };
+	if (!Array.isArray(first.expectedConditions) || !Array.isArray(first.expectedAnswerContracts) ||
+		!Array.isArray(first.expectedTaskIds) || !first.expectedConditions.includes("axi") ||
+		!first.expectedAnswerContracts.includes("compact") || !first.expectedAnswerContracts.includes("canonical")) {
+		return { status: "not_evaluable", reasons: ["cohort does not declare both answer contracts and AXI"] };
+	}
+	const expected = first.expectedConditions.flatMap((condition) =>
+		first.expectedAnswerContracts!.flatMap((contract) =>
+			first.expectedTaskIds!.flatMap((taskId) => Array.from({ length: first.expectedRepeatCount }, (_, i) =>
+				`${condition}/${contract}/${taskId}/${i + 1}`))));
+	const cells = new Map<string, BenchmarkResult>();
+	let duplicate = false;
+	for (const row of results) {
+		const key = `${row.condition}/${row.answerContract}/${row.taskId}/${row.repeatIndex}`;
+		if (cells.has(key)) duplicate = true;
+		cells.set(key, row);
+	}
+	if (duplicate || cells.size !== expected.length || expected.some((key) => !cells.has(key))) {
+		return { status: "not_evaluable", reasons: ["incomplete or duplicate condition/contract/task-repeat cells"] };
+	}
+	const pairs = new Map<string, { compact?: BenchmarkResult; canonical?: BenchmarkResult }>();
+	for (const row of axiResults) {
+		const key = `${row.taskId}/${row.repeatIndex}`;
+		const pair = pairs.get(key) ?? {};
+		if (pair[row.answerContract]) return { status: "not_evaluable", reasons: ["incomplete or duplicate AXI compact/canonical task-repeat pairs"] };
+		pair[row.answerContract] = row;
+		pairs.set(key, pair);
+	}
+	const expectedPairs = first.expectedTaskIds.flatMap((taskId) => Array.from({ length: first.expectedRepeatCount }, (_, i) => pairs.get(`${taskId}/${i + 1}`)));
+	if (pairs.size !== first.expectedTaskIds.length * first.expectedRepeatCount || expectedPairs.some((pair) => !pair?.compact || !pair.canonical)) {
+		return { status: "not_evaluable", reasons: ["incomplete or duplicate AXI compact/canonical task-repeat pairs"] };
+	}
+	const compact = expectedPairs.map((pair) => pair!.compact!);
+	const canonical = expectedPairs.map((pair) => pair!.canonical!);
+	const quality = [...cells.values()];
+	if (quality.some((row) => row.llmGrade.status !== "passed" && row.llmGrade.status !== "failed")) {
+		return { status: "not_evaluable", reasons: ["incomplete judge coverage"] };
+	}
+	const charsCovered = [...compact, ...canonical].every((row) => row.terminalAnswerCharacters !== undefined && Number.isFinite(row.terminalAnswerCharacters));
+	const tokensCovered = [...compact, ...canonical].every((row) => row.outputTokensCovered === true && Number.isFinite(row.outputTokens));
+	if (!charsCovered && !tokensCovered) return { status: "not_evaluable", reasons: ["neither terminal-character nor provider output-token coverage is complete"] };
+	const sum = (rows: readonly BenchmarkResult[], get: (row: BenchmarkResult) => number) => rows.reduce((total, row) => total + get(row), 0);
+	const reduction = (baseline: number, candidate: number) => baseline === 0 ? 0 : (baseline - candidate) / baseline;
+	const terminalCharacterReduction = charsCovered ? reduction(sum(compact, (row) => row.terminalAnswerCharacters!), sum(canonical, (row) => row.terminalAnswerCharacters!)) : undefined;
+	const outputTokenReduction = tokensCovered ? reduction(sum(compact, (row) => row.outputTokens), sum(canonical, (row) => row.outputTokens)) : undefined;
+	const sizeTargetPassed = (terminalCharacterReduction ?? Number.NEGATIVE_INFINITY) >= 0.15 || (outputTokenReduction ?? Number.NEGATIVE_INFINITY) >= 0.15;
+	if (!sizeTargetPassed && (!charsCovered || !tokensCovered)) {
+		return {
+			status: "not_evaluable",
+			reasons: ["available size metric missed 15%, but alternate size coverage is incomplete"],
+			...(terminalCharacterReduction !== undefined ? { terminalCharacterReduction } : {}),
+			...(outputTokenReduction !== undefined ? { outputTokenReduction } : {}),
+		};
+	}
+	const reasons: string[] = [];
+	const compactQuality = quality.filter((row) => row.answerContract === "compact");
+	const canonicalQuality = quality.filter((row) => row.answerContract === "canonical");
+	const canonicalQualityPassed = canonicalQuality.every((row) => row.deterministicGrade.passed && row.deterministicGrade.formatPassed && row.deterministicGrade.factChecks.length > 0 && row.deterministicGrade.factChecks.every((fact) => fact.passed && fact.grounded));
+	if (!canonicalQualityPassed) reasons.push("canonical deterministic grading or grounding is not fully passing");
+	const agreement = (rows: readonly BenchmarkResult[]) => rows.filter((row) => row.deterministicGrade.passed === (row.llmGrade.status === "passed")).length;
+	if (agreement(canonicalQuality) < agreement(compactQuality)) reasons.push("canonical judge agreement is lower");
+	if (!sizeTargetPassed) reasons.push("neither covered size metric is reduced by at least 15%");
+	if (sum(canonicalQuality, (row) => row.turns) > sum(compactQuality, (row) => row.turns)) reasons.push("canonical turns increased");
+	if (sum(canonicalQuality, (row) => row.toolCalls) > sum(compactQuality, (row) => row.toolCalls)) reasons.push("canonical tool calls increased");
+	const gates: Array<[string, (row: BenchmarkResult) => number]> = [
+		["hard safety incidents", (row) => row.safetyViolationCount],
+		["policy incidents", (row) => row.policyIncidentCount ?? row.policyIncidents?.length ?? 0],
+		["command errors", (row) => row.commandErrorCount ?? 0],
+		["API errors", (row) => row.apiErrorCount ?? 0],
+		["other tool errors", (row) => row.toolErrorCount ?? 0],
+		["infrastructure failures", (row) => row.infrastructureErrorCount ?? 0],
+	];
+	for (const [label, get] of gates) if (sum(canonicalQuality, get) > sum(compactQuality, get)) reasons.push(`${label} increased`);
+	return { status: reasons.length === 0 ? "adopt" : "retain", reasons, ...(terminalCharacterReduction !== undefined ? { terminalCharacterReduction } : {}), ...(outputTokenReduction !== undefined ? { outputTokenReduction } : {}) };
+}
 
 export interface ReportMetadata {
-	claudeVersions: string[];
 	matrixRunIds: string[];
 	benchmarkSeeds: string[];
 	snapshotTimestamps: string[];
@@ -765,10 +1094,12 @@ export interface ReportMetadata {
 	harnessCommits: string[];
 	harnessSourceHashes: string[];
 	axiBinaryHashes: string[];
+	claudeVersions: string[];
 	models: string[];
 	gradingModes: string[];
 	answerContracts: string[];
 }
+
 export function metadataFromResults(
 	results: readonly BenchmarkResult[],
 ): ReportMetadata {
@@ -811,247 +1142,16 @@ export function metadataFromResults(
 				result.claudeVersion ? [result.claudeVersion] : [],
 			),
 		),
+		models: unique(results.map((result) => result.model)),
 		gradingModes: unique(results.map((result) => result.gradingMode)),
 		answerContracts: unique(results.map((result) => result.answerContract)),
-		models: unique(results.map((result) => result.model)),
 	};
 }
 
 const markdownHeader =
 	"| Run/task | Runs | Passes | Pass rate | Deterministic | LLM | Judge agreement (passed/failed only) | Safety violations / unsafe runs (hard safety rate) | Policy incidents / affected runs (rate) | Command errors / affected runs (rate) | API errors / affected runs (rate) | Other tool errors / affected runs (rate) | Infrastructure errors / affected runs (rate) | Expected errors / affected runs (rate) | Unexpected errors / affected runs (rate) | Mean input tokens | Mean cache-read tokens | Mean cache-creation tokens | Mean output tokens (covered/runs) | Mean terminal chars (covered/runs) | Mean terminal bytes (covered/runs) | Mean reported cost USD (covered/runs) | Mean agent wall time ms | p50/p95 agent wall time ms | Mean turns | Mean tool calls | p50/p95 tool calls |";
-export interface CanonicalAdoptionAssessment {
-	status: "adopt" | "retain" | "not_evaluable";
-	reasons: string[];
-	terminalCharacterReduction?: number;
-	outputTokenReduction?: number;
-}
-
-export function assessCanonicalAdoption(
-	results: readonly BenchmarkResult[],
-): CanonicalAdoptionAssessment {
-	const axiResults = results.filter((result) => result.condition === "axi");
-	const first = axiResults[0];
-	if (!first) {
-		return {
-			status: "not_evaluable",
-			reasons: ["cohort has no AXI results"],
-		};
-	}
-
-	if (
-		!Array.isArray(first.expectedConditions) ||
-		!Array.isArray(first.expectedAnswerContracts) ||
-		!Array.isArray(first.expectedTaskIds) ||
-		!first.expectedConditions.includes("axi") ||
-		!first.expectedAnswerContracts.includes("compact") ||
-		!first.expectedAnswerContracts.includes("canonical")
-	) {
-		return {
-			status: "not_evaluable",
-			reasons: ["cohort does not declare both answer contracts and AXI"],
-		};
-	}
-	const expectedQualityKeys = first.expectedConditions.flatMap((condition) =>
-		first.expectedTaskIds.flatMap((taskId) =>
-			Array.from(
-				{ length: first.expectedRepeatCount },
-				(_, index) =>
-					["compact", "canonical"].map(
-						(contract) =>
-							`${condition}/${contract}/${taskId}/${index + 1}`,
-					),
-			).flat(),
-		),
-	);
-	const qualityByKey = new Map<string, BenchmarkResult>();
-	let duplicateQualityCell = false;
-	for (const result of results) {
-		const key = `${result.condition}/${result.answerContract}/${result.taskId}/${result.repeatIndex}`;
-		if (qualityByKey.has(key)) duplicateQualityCell = true;
-		qualityByKey.set(key, result);
-	}
-	if (
-		duplicateQualityCell ||
-		expectedQualityKeys.length === 0 ||
-		qualityByKey.size !== expectedQualityKeys.length ||
-		expectedQualityKeys.some((key) => !qualityByKey.has(key))
-	) {
-		return {
-			status: "not_evaluable",
-			reasons: ["incomplete or duplicate condition/contract/task-repeat cells"],
-		};
-	}
-	const qualityRows = expectedQualityKeys.map((key) => qualityByKey.get(key)!);
-	const compactQualityRows = qualityRows.filter(
-		(row) => row.answerContract === "compact",
-	);
-	const canonicalQualityRows = qualityRows.filter(
-		(row) => row.answerContract === "canonical",
-	);
-
-	const expectedKeys = first.expectedTaskIds.flatMap((taskId) =>
-		Array.from(
-			{ length: first.expectedRepeatCount },
-			(_, index) => `${taskId}/${index + 1}`,
-		),
-	);
-	const pairs = new Map<
-		string,
-		{ compact?: BenchmarkResult; canonical?: BenchmarkResult }
-	>();
-	let duplicatePairCell = false;
-	for (const result of axiResults) {
-		const key = `${result.taskId}/${result.repeatIndex}`;
-		const pair = pairs.get(key) ?? {};
-		if (pair[result.answerContract]) {
-			duplicatePairCell = true;
-		}
-		pair[result.answerContract] = result;
-		pairs.set(key, pair);
-	}
-	const expectedPairs = expectedKeys.map((key) => pairs.get(key));
-	if (
-		duplicatePairCell ||
-		expectedKeys.length === 0 ||
-		pairs.size !== expectedKeys.length ||
-		expectedPairs.some((pair) => !pair?.compact || !pair.canonical)
-	) {
-		return {
-			status: "not_evaluable",
-			reasons: ["incomplete or duplicate AXI compact/canonical task-repeat pairs"],
-		};
-	}
-
-	const compactRows = expectedPairs.map((pair) => pair!.compact!);
-	const canonicalRows = expectedPairs.map((pair) => pair!.canonical!);
-	const axiPairRows = [...compactRows, ...canonicalRows];
-	if (
-		qualityRows.some(
-			(row) =>
-				row.llmGrade.status !== "passed" && row.llmGrade.status !== "failed",
-		)
-	) {
-		return {
-			status: "not_evaluable",
-			reasons: ["incomplete judge coverage"],
-		};
-	}
-
-	const charactersCovered = axiPairRows.every(
-		(row) =>
-			row.terminalAnswerCharacters !== undefined &&
-			Number.isFinite(row.terminalAnswerCharacters),
-	);
-	const tokensCovered = axiPairRows.every(
-		(row) => row.outputTokensCovered && Number.isFinite(row.outputTokens),
-	);
-	if (!charactersCovered && !tokensCovered) {
-		return {
-			status: "not_evaluable",
-			reasons: ["neither terminal-character nor provider output-token coverage is complete"],
-		};
-	}
-
-	const sum = (
-		items: readonly BenchmarkResult[],
-		selector: (row: BenchmarkResult) => number,
-	): number => items.reduce((total, row) => total + selector(row), 0);
-	const reduction = (baseline: number, candidate: number): number =>
-		baseline === 0 ? 0 : (baseline - candidate) / baseline;
-	const terminalCharacterReduction = charactersCovered
-		? reduction(
-				sum(compactRows, (row) => row.terminalAnswerCharacters!),
-				sum(canonicalRows, (row) => row.terminalAnswerCharacters!),
-			)
-		: undefined;
-	const outputTokenReduction = tokensCovered
-		? reduction(
-				sum(compactRows, (row) => row.outputTokens),
-				sum(canonicalRows, (row) => row.outputTokens),
-			)
-		: undefined;
-	const sizeTargetPassed =
-		(terminalCharacterReduction ?? Number.NEGATIVE_INFINITY) >= 0.15 ||
-		(outputTokenReduction ?? Number.NEGATIVE_INFINITY) >= 0.15;
-	if (!sizeTargetPassed && (!charactersCovered || !tokensCovered)) {
-		return {
-			status: "not_evaluable",
-			reasons: ["available size metric missed 15%, but alternate size coverage is incomplete"],
-			...(terminalCharacterReduction !== undefined
-				? { terminalCharacterReduction }
-				: {}),
-			...(outputTokenReduction !== undefined ? { outputTokenReduction } : {}),
-		};
-	}
-
-	const reasons: string[] = [];
-	const canonicalDeterministic = canonicalQualityRows.every(
-		(row) =>
-			row.deterministicGrade.passed &&
-			row.deterministicGrade.formatPassed &&
-			row.deterministicGrade.factChecks.length > 0 &&
-			row.deterministicGrade.factChecks.every(
-				(fact) => fact.passed && fact.grounded,
-			),
-	);
-	if (!canonicalDeterministic) {
-		reasons.push("canonical deterministic grading or grounding is not fully passing");
-	}
-	const agreement = (items: readonly BenchmarkResult[]): number =>
-		items.filter(
-			(row) =>
-				row.deterministicGrade.passed === (row.llmGrade.status === "passed"),
-		).length;
-	if (agreement(canonicalQualityRows) < agreement(compactQualityRows)) {
-		reasons.push("canonical judge agreement is lower");
-	}
-	if (!sizeTargetPassed) {
-		reasons.push("neither covered size metric is reduced by at least 15%");
-	}
-	if (
-		sum(canonicalRows, (row) => row.turns) >
-		sum(compactRows, (row) => row.turns)
-	) {
-		reasons.push("canonical turns increased");
-	}
-	if (
-		sum(canonicalRows, (row) => row.toolCalls) >
-		sum(compactRows, (row) => row.toolCalls)
-	) {
-		reasons.push("canonical tool calls increased");
-	}
-	const comparisons: Array<[
-		string,
-		(row: BenchmarkResult) => number,
-	]> = [
-		["hard safety incidents", (row) => row.safetyViolationCount],
-		[
-			"policy incidents",
-			(row) => row.policyIncidentCount ?? row.policyIncidents?.length ?? 0,
-		],
-		["command errors", (row) => row.commandErrorCount ?? 0],
-		["API errors", (row) => row.apiErrorCount ?? 0],
-		["other tool errors", (row) => row.toolErrorCount ?? 0],
-		["infrastructure failures", (row) => row.infrastructureErrorCount ?? 0],
-	];
-	for (const [label, selector] of comparisons) {
-		if (sum(canonicalQualityRows, selector) > sum(compactQualityRows, selector)) {
-			reasons.push(`${label} increased`);
-		}
-	}
-
-	return {
-		status: reasons.length === 0 ? "adopt" : "retain",
-		reasons,
-		...(terminalCharacterReduction !== undefined
-			? { terminalCharacterReduction }
-			: {}),
-		...(outputTokenReduction !== undefined ? { outputTokenReduction } : {}),
-	};
-}
-
 const markdownSeparator =
-	"| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |";
+	"|" + " --- |".repeat(27);
 const emptyMarkdownRow =
 	"| (no results) | 0 | 0 | 0.0% | 0 | 0/0 | 0/0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 / 0 (0.0%) | 0 | 0 | 0 | n/a (0/0) | n/a (0/0) | n/a (0/0) | n/a (0/0) | 0 | 0/0 | 0 | 0 | 0/0 |";
 
@@ -1062,8 +1162,7 @@ export function renderMarkdownReport(
 	selectedMatrixRunId?: string,
 	adoption = assessCanonicalAdoption(results),
 ): string {
-	const selected =
-		selectedMatrixRunId ??
+	const selected = selectedMatrixRunId ??
 		(metadata.matrixRunIds.length === 1 ? metadata.matrixRunIds[0] : undefined);
 	const lines = [
 		"# Linear read-only benchmark report",
@@ -1076,7 +1175,7 @@ export function renderMarkdownReport(
 		`- Deterministic passes: ${aggregate.deterministicPassed}/${aggregate.runs}`,
 		`- LLM judge passes: ${aggregate.llmPassed}/${aggregate.llmConsidered} considered`,
 		`- Judge agreement (deterministic vs judge, passed/failed judge results only): ${aggregate.judgeAgreement}/${aggregate.judgeAgreementConsidered} (${percent(aggregate.judgeAgreementRate)})`,
-		`- Totals (not comparable averages) — input/cache/output tokens: ${aggregate.inputTokens}/${aggregate.cacheReadInputTokens + aggregate.cacheCreationInputTokens}/${aggregate.outputTokens}`,
+		`- Totals (not comparable averages) — input/cache/output tokens: ${aggregate.inputTokens}/${aggregate.cacheReadInputTokens + aggregate.cacheCreationInputTokens}/${aggregate.outputTokensCoveredRuns > 0 ? aggregate.outputTokens : "n/a"}; output-token coverage: ${aggregate.outputTokensCoveredRuns}/${aggregate.runs}.`,
 		`- Totals (not comparable averages) — reported cost (USD): ${aggregate.reportedCostUsd.toFixed(6)} across ${aggregate.reportedCostSamples}/${aggregate.runs} results; missing coverage: ${aggregate.missingCostCount}`,
 		`- Totals (not comparable averages) — agent wall time (ms), turns, tool calls: ${aggregate.wallTimeMs.toFixed(0)}/${aggregate.turns}/${aggregate.toolCalls}`,
 		`- Retries: ${aggregate.retries} across ${aggregate.retryCoveredRuns}/${aggregate.runs} covered results.`,
@@ -1096,7 +1195,7 @@ export function renderMarkdownReport(
 		`- Canonical adoption assessment: ${adoption.status} — ${adoption.reasons.join("; ") || "all gates passed"}`,
 		`- Terminal character reduction: ${adoption.terminalCharacterReduction === undefined ? "n/a" : percent(adoption.terminalCharacterReduction)}`,
 		`- Provider output-token reduction: ${adoption.outputTokenReduction === undefined ? "n/a" : percent(adoption.outputTokenReduction)}`,
-		`- Coverage — terminal characters: ${aggregate.terminalAnswerCharacterCoveredRuns}/${aggregate.runs}; terminal bytes: ${aggregate.terminalAnswerByteCoveredRuns}/${aggregate.runs}; output tokens: ${aggregate.outputTokenCoveredRuns}/${aggregate.runs}`,
+		`- Coverage — terminal characters: ${aggregate.terminalAnswerCharacterCoveredRuns}/${aggregate.runs}; terminal bytes: ${aggregate.terminalAnswerByteCoveredRuns}/${aggregate.runs}; output tokens: ${aggregate.outputTokensCoveredRuns}/${aggregate.runs}`,
 		"",
 		"## Summary by condition (per-run means)",
 		"",
@@ -1111,6 +1210,22 @@ export function renderMarkdownReport(
 		"| --- | --- | ---: | ---: | ---: | ---: |",
 		...componentMarkdownRows(aggregate.byCondition),
 		"",
+		"## Phase sizes by condition",
+		"",
+		"Character and UTF-8-byte values are size proxies, not exact token attribution. `linkedToolResultText` is subsequent input and is not generated output.",
+		"",
+		"| Condition | Phase | Total code points | Mean code points / covered run | Total UTF-8 bytes | Mean UTF-8 bytes / covered run | Covered/runs |",
+		"| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+		...phaseMarkdownRows(aggregate.byCondition),
+		"",
+		attributionSummary(aggregate),
+		"",
+		"## Phase sizes by condition and task category",
+		"",
+		"| Condition/category | Phase | Total code points | Mean code points / covered run | Total UTF-8 bytes | Mean UTF-8 bytes / covered run | Covered/runs |",
+		"| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+		...phaseMarkdownRows(aggregate.byCategory),
+		"",
 		"## Per task and condition (per-run means)",
 		"",
 		markdownHeader,
@@ -1120,10 +1235,11 @@ export function renderMarkdownReport(
 		"",
 		"## Interpretation",
 		"",
-		"Rows report per-run means; p50/p95 use the selected run's individual results. Judge agreement compares deterministic pass/fail with passed/failed judge results and excludes skipped/error judge results. Component means divide by covered runs only; retry totals and coverage stay separate from latency. Every incident category is shown as an incident total followed by affected runs; rates are run-level rates capped at 100%. Unexpected errors are command, API, other tool, and infrastructure errors combined; expected errors are reported separately. Totals above are sums and are not comparable averages. Agent wall time excludes the optional judge. Missing provider cost and component timing remain uncovered rather than becoming zero. Policy incidents are audit findings and do not override correctness; hard safety violations do override correctness, as do true infrastructure failures. Deterministic grading requires condition-appropriate tool use, the task minimum call count, every required fact in the final answer, and linked non-error tool-result evidence (with expected not-found tool errors allowed for the not-found task). Reports contain no per-request content.",
+		"Rows report per-run means; p50/p95 use selected run results. Provider output-token and phase means divide by covered runs only; unavailable values render n/a instead of synthetic zero. Phase code-point/byte sizes are proxies and cannot be summed into exact provider token attribution. Linked tool-result text is reported separately as subsequent input. Judge agreement excludes skipped/error judge results. Component intervals overlap and means divide by covered runs. Incident rates are run-level and capped at 100%. Unexpected errors combine command, API, other tool, and infrastructure errors; expected errors stay separate. Policy incidents do not override correctness; hard safety violations and true infrastructure failures do. Reports contain no per-request content.",
 		"",
 	];
 	return lines.join("\n");
+
 }
 
 function snakeCase(value: string): string {
@@ -1131,6 +1247,7 @@ function snakeCase(value: string): string {
 }
 
 const csvColumns = [
+	"row_scope",
 	"task_id",
 	"category",
 	"condition",
@@ -1174,6 +1291,7 @@ const csvColumns = [
 	"mean_cache_read_input_tokens",
 	"mean_cache_creation_input_tokens",
 	"mean_output_tokens",
+	"output_tokens_covered_runs",
 	"mean_reported_cost_usd",
 	"reported_cost_samples",
 	"missing_cost_count",
@@ -1186,26 +1304,30 @@ const csvColumns = [
 	"p95_tool_calls",
 	...COMPONENT_TIMING_METRIC_KEYS.flatMap((key) => {
 		const prefix = snakeCase(key);
-		return [
-			`${prefix}_total_ms`,
-			`${prefix}_mean_ms`,
-			`${prefix}_covered_runs`,
-			`${prefix}_event_count`,
-		];
+		return [`${prefix}_total_ms`, `${prefix}_mean_ms`, `${prefix}_covered_runs`, `${prefix}_event_count`];
 	}),
 	"retries",
 	"mean_retries",
 	"retry_covered_runs",
 	"answer_contract",
-	"output_token_covered_runs",
-	"mean_terminal_answer_characters",
-	"terminal_answer_character_covered_runs",
-	"mean_terminal_answer_bytes",
-	"terminal_answer_byte_covered_runs",
 	"canonical_adoption_status",
 	"canonical_adoption_reasons",
 	"terminal_character_reduction",
 	"output_token_reduction",
+	"mean_terminal_answer_characters",
+	"terminal_answer_character_covered_runs",
+	"mean_terminal_answer_bytes",
+	"terminal_answer_byte_covered_runs",
+	...PHASE_KEYS.flatMap((key) => {
+		const prefix = snakeCase(key);
+		return [
+			`${prefix}_total_code_points`,
+			`${prefix}_mean_code_points`,
+			`${prefix}_total_utf8_bytes`,
+			`${prefix}_mean_utf8_bytes`,
+			`${prefix}_covered_runs`,
+		];
+	}),
 ];
 
 function csvCell(value: string | number): string {
@@ -1213,11 +1335,10 @@ function csvCell(value: string | number): string {
 	return /[",\n]/u.test(text) ? `"${text.replace(/"/gu, '""')}"` : text;
 }
 
-function csvRow(
-	row: AggregateRow,
-	assessment?: CanonicalAdoptionAssessment,
-): string {
+function csvRow(row: AggregateRow, assessment?: CanonicalAdoptionAssessment): string {
+	const scope = row.taskId ? "task" : row.category ? "category" : "condition";
 	return [
+		scope,
 		row.taskId ?? "",
 		row.category ?? "",
 		row.condition ?? row.key,
@@ -1261,9 +1382,8 @@ function csvRow(
 		row.meanCacheReadInputTokens.toFixed(6),
 		row.meanCacheCreationInputTokens.toFixed(6),
 		row.meanOutputTokens === undefined ? "" : row.meanOutputTokens.toFixed(6),
-		row.meanReportedCostUsd === undefined
-			? ""
-			: row.meanReportedCostUsd.toFixed(6),
+		row.outputTokensCoveredRuns,
+		row.meanReportedCostUsd === undefined ? "n/a" : row.meanReportedCostUsd.toFixed(6),
 		row.reportedCostSamples,
 		row.missingCostCount,
 		row.meanWallTimeMs.toFixed(3),
@@ -1277,45 +1397,39 @@ function csvRow(
 			const metric = row.componentTimings[key];
 			return [
 				metric.totalMs.toFixed(3),
-				metric.meanMs === undefined ? "" : metric.meanMs.toFixed(3),
+				metric.meanMs === undefined ? "n/a" : metric.meanMs.toFixed(3),
 				metric.coveredRuns,
 				metric.eventCount,
 			];
 		}),
 		row.retries,
-		row.meanRetries === undefined ? "" : row.meanRetries.toFixed(6),
+		row.meanRetries === undefined ? "n/a" : row.meanRetries.toFixed(6),
 		row.retryCoveredRuns,
 		row.answerContract ?? "",
-		row.outputTokenCoveredRuns,
-		row.meanTerminalAnswerCharacters === undefined
-			? ""
-			: row.meanTerminalAnswerCharacters.toFixed(6),
-		row.terminalAnswerCharacterCoveredRuns,
-		row.meanTerminalAnswerBytes === undefined
-			? ""
-			: row.meanTerminalAnswerBytes.toFixed(6),
-		row.terminalAnswerByteCoveredRuns,
 		assessment?.status ?? "",
 		assessment?.reasons.join("; ") ?? "",
-		assessment?.terminalCharacterReduction === undefined
-			? ""
-			: assessment.terminalCharacterReduction.toFixed(6),
-		assessment?.outputTokenReduction === undefined
-			? ""
-			: assessment.outputTokenReduction.toFixed(6),
-	]
-		.map(csvCell)
-		.join(",");
+		assessment?.terminalCharacterReduction === undefined ? "" : assessment.terminalCharacterReduction.toFixed(6),
+		assessment?.outputTokenReduction === undefined ? "" : assessment.outputTokenReduction.toFixed(6),
+		row.meanTerminalAnswerCharacters === undefined ? "" : row.meanTerminalAnswerCharacters.toFixed(6),
+		row.terminalAnswerCharacterCoveredRuns,
+		row.meanTerminalAnswerBytes === undefined ? "" : row.meanTerminalAnswerBytes.toFixed(6),
+		row.terminalAnswerByteCoveredRuns,
+		...PHASE_KEYS.flatMap((key) => {
+			const metric = row.phaseSizes[key];
+			return [
+				metric.coveredRuns === 0 ? "n/a" : metric.totalCodePoints,
+				metric.meanCodePoints === undefined ? "n/a" : metric.meanCodePoints.toFixed(6),
+				metric.coveredRuns === 0 ? "n/a" : metric.totalUtf8Bytes,
+				metric.meanUtf8Bytes === undefined ? "n/a" : metric.meanUtf8Bytes.toFixed(6),
+				metric.coveredRuns,
+			];
+		}),
+	].map(csvCell).join(",");
 }
 
-export function renderCsvReport(
-	aggregate: ReportAggregate,
-	assessment?: CanonicalAdoptionAssessment,
-): string {
-	return [
-		csvColumns.join(","),
-		...aggregate.byTask.map((row) => csvRow(row, assessment)),
-	].join("\n") + "\n";
+export function renderCsvReport(aggregate: ReportAggregate, assessment?: CanonicalAdoptionAssessment): string {
+	const rows = [...aggregate.byCondition, ...aggregate.byCategory, ...aggregate.byTask];
+	return [csvColumns.join(","), ...rows.map((row) => csvRow(row, assessment))].join("\n") + "\n";
 }
 
 export async function writeReports(
@@ -1335,15 +1449,8 @@ export async function writeReports(
 			"report results must already contain one selected matrix cohort; writeReports will not switch cohorts",
 		);
 	}
-	if (
-		selectedMatrixRunId !== undefined &&
-		adoptionResults.some(
-			(result) => result.matrixRunId !== selectedMatrixRunId,
-		)
-	) {
-		throw new Error(
-			"adoption assessment results must belong to the selected matrix cohort",
-		);
+	if (selectedMatrixRunId !== undefined && adoptionResults.some((result) => result.matrixRunId !== selectedMatrixRunId)) {
+		throw new Error("adoption assessment results must belong to the selected matrix cohort");
 	}
 	await mkdir(dirname(markdownFile), { recursive: true });
 	await mkdir(dirname(csvFile), { recursive: true });

@@ -3,6 +3,37 @@ import { validatePreflightResults } from "../src/preflight.js";
 import { result } from "./fixtures.js";
 
 describe("preflight primitive reachability validation", () => {
+	it("accepts a compact operation trace with grounded evidence", () => {
+		const base = result();
+		const validation = validatePreflightResults([{
+			...base,
+			deterministicGrade: {
+				...base.deterministicGrade,
+				operationTrace: ["issue_view"],
+				operationChecksPassed: true,
+				factChecks: [{ label: "fact", passed: true, grounded: true }],
+			},
+		}]);
+		expect(validation).toEqual({ passed: true, failures: [] });
+	});
+
+	it("rejects legacy or malformed AXI operation traces", () => {
+		const base = result();
+		const validation = validatePreflightResults([{
+			...base,
+			deterministicGrade: {
+				...base.deterministicGrade,
+				operationTrace: ["other"],
+				operationChecksPassed: false,
+				factChecks: [{ label: "fact", passed: true, grounded: true }],
+			},
+		}]);
+		expect(validation.passed).toBe(false);
+		expect(validation.failures).toContain(
+			`${base.resultId}: required operation semantics or linked results failed`,
+		);
+	});
+
 	it("does not require factual correctness and permits policy/ordinary errors", () => {
 		const candidate = result({
 			overallPassed: false,

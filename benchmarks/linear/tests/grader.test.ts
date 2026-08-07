@@ -800,13 +800,25 @@ describe("deterministic grading", () => {
 			id,
 			name: "Bash",
 			kind: "bash" as const,
-			input: { command: `magi-linear-axi issue query --search='${search}'` },
+			input: { command: `magi-linear-axi issue query --search='${search}' --fields compact` },
 		});
 		const axiViewCall = (id = "axi-view", identifier = "ENG-10") => ({
 			id,
 			name: "Bash",
 			kind: "bash" as const,
-			input: { command: `magi-linear-axi issue view ${identifier}` },
+			input: { command: `magi-linear-axi issue view ${identifier} --fields compact` },
+		});
+		const legacyAxiSearchCall = (id = "legacy-search") => ({
+			id,
+			name: "Bash",
+			kind: "bash" as const,
+			input: { command: "magi-linear-axi issue query --search='Improve query latency'" },
+		});
+		const malformedAxiViewCall = (id = "malformed-view") => ({
+			id,
+			name: "Bash",
+			kind: "bash" as const,
+			input: { command: "magi-linear-axi issue view ENG-10 --fields compact --fields compact" },
 		});
 		const mcpSearchCall = (id = "mcp-search", search = "Improve query latency") => ({
 			id,
@@ -862,6 +874,28 @@ describe("deterministic grading", () => {
 		}
 
 		const failures = [
+			[
+				"legacy full search form",
+				grade(
+					searchTask,
+					"axi",
+					[legacyAxiSearchCall()],
+					[searchResult("legacy-search")],
+				),
+			],
+			[
+				"malformed duplicate compact selector",
+				grade(
+					{ ...searchTask, requiredOperations: [{
+						kind: "issue_view",
+						operand: "ENG-10",
+						requiredResultValues: ["ENG-10", "Improve query latency"],
+					}] },
+					"axi",
+					[malformedAxiViewCall()],
+					[viewResult("malformed-view")],
+				),
+			],
 			[
 				"errored search plus good view",
 				grade(

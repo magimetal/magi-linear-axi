@@ -10,6 +10,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 - Add interface-neutral compact-versus-canonical benchmark cells. Canonical answers use exact minified JSON with ordered task schemas, string values, literal Unicode, normal JSON escaping, ordered arrays for multiple records, and explicit issue-scoped not-found errors.
 - Add contract-aware scheduling, preflight/grading, strict cohort validation, provider output-token coverage, terminal Unicode-character/UTF-8-byte metrics, and `adopt`/`retain`/`not_evaluable` reporting against the 15% adoption gate.
+- Add content-free stream phase-size instrumentation using Unicode code points and UTF-8 bytes for assistant tool arguments, visible preterminal text, terminal answers, exposed thinking, and linked tool results. Reports preserve provider output-token totals, expose missing coverage as `n/a`, and aggregate phases by condition, answer contract, and task category.
+
+### Fixed
+
+- Align AXI benchmark guidance, broker validation, safety checks, and operation grading with v0.2.0 compact projections: `--fields compact` for bounded reads and `--limit=10` for comment/relation lists.
 
 ## [0.2.0] - 2026-08-06
 

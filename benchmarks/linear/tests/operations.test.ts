@@ -11,14 +11,14 @@ const axiCalls: ParsedToolCall[] = [
 		name: "Bash",
 		kind: "bash",
 		input: {
-			command: "/tmp/axi-wrapper issue query --search=' Full title '",
+			command: "/tmp/axi-wrapper issue query --search=' Full title ' --fields compact",
 		},
 	},
 	{
 		id: "axi-view",
 		name: "Bash",
 		kind: "bash",
-		input: { command: "/tmp/axi-wrapper issue view ENG-10" },
+		input: { command: "/tmp/axi-wrapper issue view ENG-10 --fields compact" },
 	},
 ];
 
@@ -80,6 +80,55 @@ describe("typed operation extraction and semantics", () => {
 				issueIdentifier: "ENG-10",
 			},
 		]);
+	});
+
+	it("extracts an exact operand from a double-quoted compact search", () => {
+		const calls: ParsedToolCall[] = [{
+			id: "axi-double-quoted-search",
+			name: "Bash",
+			kind: "bash",
+			input: {
+				command: '/tmp/axi-wrapper issue query --search="Full title" --fields compact',
+			},
+		}];
+		const observed = classifyOperations("axi", calls, "/tmp/axi-wrapper");
+		expect(observed).toMatchObject([{
+			kind: "issue_search",
+			toolUseId: "axi-double-quoted-search",
+			operand: "Full title",
+			searchText: "Full title",
+		}]);
+		const required: RequiredOperation[] = [{
+			kind: "issue_search",
+			operand: "Full title",
+			requiredResultValues: ["ENG-10", "Full title"],
+		}];
+		const linked = new Map<string, ParsedToolResult[]>([[
+			"axi-double-quoted-search",
+			[{ toolUseId: "axi-double-quoted-search", text: "ENG-10 Full title", isError: false }],
+		]]);
+		expect(operationRequirementsMatch(required, observed, linked)).toBe(true);
+	});
+
+	it("classifies legacy and malformed AXI selectors as other", () => {
+		const commands = [
+			"/tmp/axi-wrapper issue view ENG-10",
+			"/tmp/axi-wrapper issue query --search=Full title",
+			"/tmp/axi-wrapper issue view ENG-10 --fields full",
+			"/tmp/axi-wrapper issue view ENG-10 --fields compact --fields compact",
+			"/tmp/axi-wrapper issue comment list ENG-10 --fields compact --limit=9",
+		];
+		const observed = classifyOperations(
+			"axi",
+			commands.map((command, index) => ({
+				id: `invalid-${index}`,
+				name: "Bash",
+				kind: "bash" as const,
+				input: { command },
+			})),
+			"/tmp/axi-wrapper",
+		);
+		expect(observed.map((operation) => operation.kind)).toEqual(commands.map(() => "other"));
 	});
 
 	it("retains MCP tool IDs and the typed query/identifier operands", () => {
