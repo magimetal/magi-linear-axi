@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-07
+
 ### Added
 
 - Add interface-neutral compact-versus-canonical benchmark cells. Canonical answers use exact minified JSON with ordered task schemas, string values, literal Unicode, normal JSON escaping, ordered arrays for multiple records, and explicit issue-scoped not-found errors.

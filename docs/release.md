@@ -2,7 +2,7 @@
 
 Release `magi-linear-axi` from clean `main` only.
 
-1. Confirm branch, version `0.2.0` in `Cargo.toml`, matching `Cargo.lock`, and dated `CHANGELOG.md` section. Confirm `v0.2.0` does not exist locally, remotely, or on crates.io.
+1. Confirm branch, version `0.2.1` in `Cargo.toml`, matching `Cargo.lock`, and dated `CHANGELOG.md` section. Confirm `v0.2.1` does not exist locally, remotely, or on crates.io.
 2. Run locked gates with Rust 1.87:
 
    ```sh
@@ -20,7 +20,7 @@ Release `magi-linear-axi` from clean `main` only.
    ```sh
    cargo +1.87.0 package --locked --list
    cargo +1.87.0 package --locked
-   tar -tf target/package/magi-linear-axi-0.2.0.crate
+   tar -tf target/package/magi-linear-axi-0.2.1.crate
    cargo +1.87.0 publish --locked --dry-run
    ```
 
@@ -36,7 +36,7 @@ Release `magi-linear-axi` from clean `main` only.
 
    ```sh
    INSTALL_ROOT="$(mktemp -d)"
-   cargo +1.87.0 install magi-linear-axi --version 0.2.0 --locked --root "$INSTALL_ROOT"
+   cargo +1.87.0 install magi-linear-axi --version 0.2.1 --locked --root "$INSTALL_ROOT"
    "$INSTALL_ROOT/bin/magi-linear-axi" --help
    "$INSTALL_ROOT/bin/magi-linear-axi" --version
    trash "$INSTALL_ROOT"
@@ -45,7 +45,7 @@ Release `magi-linear-axi` from clean `main` only.
 8. Create immutable annotated tag on published commit and GitHub release from reviewed changelog notes:
 
    ```sh
-   git tag -a v0.2.0 -m "magi-linear-axi v0.2.0"
-   git push origin v0.2.0
-   gh release create v0.2.0 --verify-tag --title "magi-linear-axi v0.2.0" --notes-file <reviewed-release-notes.md>
+   git tag -a v0.2.1 -m "magi-linear-axi v0.2.1"
+   git push origin v0.2.1
+   gh release create v0.2.1 --verify-tag --title "magi-linear-axi v0.2.1" --notes-file <reviewed-release-notes.md>
    ```
