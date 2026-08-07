@@ -314,11 +314,14 @@ export function classifyOperations(
 	calls: readonly ParsedToolCall[],
 	resolvedAxiBin = "magi-linear-axi",
 ): ObservedOperation[] {
-	return calls.map((call, callIndex) => {
+	return calls.flatMap((call, callIndex) => {
+		if (call.kind === "structured_output") {
+			return [];
+		}
 		const classified = condition === "axi"
 			? classifyAxiCall(call, resolvedAxiBin)
 			: classifyMcpCall(call);
-		return {
+		return [{
 			kind: classified.kind,
 			condition,
 			callIndex,
@@ -332,7 +335,7 @@ export function classifyOperations(
 			...(classified.issueIdentifier !== undefined
 				? { issueIdentifier: classified.issueIdentifier }
 				: {}),
-		};
+		}];
 	});
 }
 

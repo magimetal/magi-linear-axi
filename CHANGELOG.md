@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+### Fixed
+
+- Strengthen canonical benchmark preflight with one-record provider JSON Schema enforcement, prompt-only array enforcement for provider compatibility, exact-value preservation and escaped serialized-evidence grounding, MCP search argument guidance, and relation parity that excludes provider-specific relation-type spellings from the oracle.
+
 ## [0.2.1] - 2026-08-07
 
 ### Added

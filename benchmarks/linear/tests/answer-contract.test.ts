@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	answerContractPrompt,
+	canonicalAnswerJsonSchema,
 	canonicalAnswerPassed,
 	expectedCanonicalAnswer,
 	fieldKey,
@@ -31,6 +32,67 @@ describe("canonical answer contract", () => {
 		expect(
 			serializeCanonicalRecords([{ a: "1" }, { a: "2" }]),
 		).toBe('[{"a":"1"},{"a":"2"}]');
+	});
+
+	it("builds strict object schemas and leaves multi-record arrays to deterministic grading", () => {
+		const one = task([
+			{ label: "issue identifier", kind: "contains", value: "ENG-1" },
+			{ label: "issue title", kind: "contains", value: "Fix" },
+		]);
+		expect(canonicalAnswerJsonSchema(one)).toEqual({
+			type: "object",
+			properties: {
+				issue_identifier: { type: "string" },
+				issue_title: { type: "string" },
+			},
+			required: ["issue_identifier", "issue_title"],
+			additionalProperties: false,
+		});
+
+		const sameShape = task(
+			[
+				{ label: "first identifier", kind: "contains", value: "ENG-1" },
+				{ label: "first title", kind: "contains", value: "One" },
+				{ label: "second identifier", kind: "contains", value: "ENG-2" },
+				{ label: "second title", kind: "contains", value: "Two" },
+			],
+			[
+				{
+					fields: [
+						{ key: "identifier", factLabel: "first identifier" },
+						{ key: "title", factLabel: "first title" },
+					],
+				},
+				{
+					fields: [
+						{ key: "identifier", factLabel: "second identifier" },
+						{ key: "title", factLabel: "second title" },
+					],
+				},
+			],
+		);
+		expect(canonicalAnswerJsonSchema(sameShape)).toBeUndefined();
+		expect(answerContractPrompt("canonical", sameShape)).toContain(
+			"one JSON array with exactly 2 ordered JSON objects",
+		);
+
+		const differentShape = task(
+			[
+				{ label: "first", kind: "contains", value: "one" },
+				{ label: "second", kind: "contains", value: "two" },
+			],
+			[
+				{ fields: [{ key: "first", factLabel: "first" }] },
+				{ fields: [{ key: "second", factLabel: "second" }] },
+			],
+		);
+		expect(canonicalAnswerJsonSchema(differentShape)).toBeUndefined();
+		expect(answerContractPrompt("canonical", differentShape)).toContain(
+			'Value-placeholder template derived only from keys: [{"first":"<first>"},{"second":"<second>"}]',
+		);
+		expect(
+			canonicalAnswerPassed(differentShape, '[{"first":"one"},{"second":"two"}]'),
+		).toBe(true);
 	});
 
 	it("preserves Unicode and applies normal JSON escaping to exact string values", () => {
@@ -150,7 +212,7 @@ describe("canonical answer contract", () => {
 		}
 	});
 
-	it("includes byte-identical grammar and task schema in canonical prompts", () => {
+	it("includes exact object and array templates without oracle values", () => {
 		const candidate = task([
 			{ label: "issue identifier", kind: "contains", value: "ENG-1" },
 			{ label: "issue title", kind: "contains", value: "Fix" },
@@ -159,10 +221,38 @@ describe("canonical answer contract", () => {
 		expect(prompt).toContain(
 			'Schema key order: [["issue_identifier","issue_title"]]',
 		);
+		expect(prompt).toContain(
+			'Value-placeholder template derived only from keys: {"issue_identifier":"<issue_identifier>","issue_title":"<issue_title>"}',
+		);
+		expect(prompt).toContain("Exact top-level JSON shape: one JSON object");
 		expect(prompt).toContain("normal JSON escaping");
+		expect(prompt).toContain("character-for-character");
+		expect(prompt).toContain("without Unicode normalization");
 		expect(prompt).toContain("exactly `issue IDENTIFIER not found`");
+		expect(prompt).not.toContain("ENG-1");
+		expect(prompt).not.toContain("Fix");
+
+		const arrayCandidate = task(
+			[
+				{ label: "first", kind: "contains", value: "oracle-one" },
+				{ label: "second", kind: "contains", value: "oracle-two" },
+			],
+			[
+				{ fields: [{ key: "value", factLabel: "first" }] },
+				{ fields: [{ key: "value", factLabel: "second" }] },
+			],
+		);
+		const arrayPrompt = answerContractPrompt("canonical", arrayCandidate);
+		expect(arrayPrompt).toContain(
+			"Exact top-level JSON shape: one JSON array with exactly 2 ordered JSON objects.",
+		);
+		expect(arrayPrompt).toContain(
+			'Value-placeholder template derived only from keys: [{"value":"<value>"},{"value":"<value>"}]',
+		);
+		expect(arrayPrompt).not.toContain("oracle-one");
+		expect(arrayPrompt).not.toContain("oracle-two");
 		expect(answerContractPrompt("compact")).toContain(
-			"Return only requested fields",
+			"character-for-character",
 		);
 	});
 

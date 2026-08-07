@@ -143,7 +143,25 @@ export interface ParsedToolCall {
   id?: string;
   name: string;
   input: unknown;
-  kind: "bash" | "mcp" | "other";
+  kind: "bash" | "mcp" | "structured_output" | "other";
+}
+
+/** Exact provider-internal tool name used to transport a structured final answer. */
+export const STRUCTURED_OUTPUT_TOOL_NAME = "StructuredOutput";
+
+/** Classifies provider tool names without treating similarly named user tools as internal. */
+export function parsedToolCallKind(name: string): ParsedToolCall["kind"] {
+  if (name === STRUCTURED_OUTPUT_TOOL_NAME) {
+    return "structured_output";
+  }
+  const normalized = name.toLowerCase();
+  if (normalized === "bash") {
+    return "bash";
+  }
+  if (normalized.startsWith("mcp__")) {
+    return "mcp";
+  }
+  return "other";
 }
 
 export interface ParsedToolResult {

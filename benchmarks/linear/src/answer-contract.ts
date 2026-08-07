@@ -8,10 +8,21 @@ import type {
 export const CANONICAL_ANSWER_CONTRACT = [
 	"Canonical answer contract:",
 	"Return exactly one minified JSON object for one record, or one minified JSON array for multiple ordered records.",
-	"Use exact schema key order, literal Unicode, and normal JSON escaping for quotes, backslashes, control characters, and multiline values.",
-	"Every field value must be a string. Emit no whitespace outside string values, prose, code fences, or extra fields.",
+	"Use the exact top-level shape, record count, and schema key order specified below.",
+	"Use literal Unicode and normal JSON escaping for quotes, backslashes, control characters, and multiline values.",
+	"Every field value must be a string. The entire response must be JSON only: no whitespace outside string values, prose, commentary, Markdown, code fences, or extra fields.",
+	"Copy every tool-returned value character-for-character, including leading and trailing whitespace, line breaks, and Unicode punctuation, without Unicode normalization or any other normalization.",
 	"For an invalid issue, the error value must be exactly `issue IDENTIFIER not found`, replacing IDENTIFIER with the requested issue identifier.",
 ].join("\n");
+
+export interface CanonicalAnswerObjectJsonSchema {
+	type: "object";
+	properties: Record<string, { type: "string" }>;
+	required: string[];
+	additionalProperties: false;
+}
+
+export type CanonicalAnswerJsonSchema = CanonicalAnswerObjectJsonSchema;
 
 export function fieldKey(label: string): string {
 	return label
@@ -39,6 +50,30 @@ export function canonicalAnswerSchema(
 			})),
 		},
 	];
+}
+
+function canonicalAnswerObjectJsonSchema(
+	record: CanonicalAnswerRecord,
+): CanonicalAnswerObjectJsonSchema {
+	const properties: Record<string, { type: "string" }> = {};
+	for (const field of record.fields) {
+		properties[field.key] = { type: "string" };
+	}
+	return {
+		type: "object",
+		properties,
+		required: record.fields.map((field) => field.key),
+		additionalProperties: false,
+	};
+}
+
+/** Builds the provider-enforced schema when one can express the task exactly. */
+export function canonicalAnswerJsonSchema(
+	task: BenchmarkTask,
+): CanonicalAnswerJsonSchema | undefined {
+	const records = canonicalAnswerSchema(task);
+	const record = records.length === 1 ? records[0] : undefined;
+	return record ? canonicalAnswerObjectJsonSchema(record) : undefined;
 }
 
 export function serializeCanonicalRecords(
@@ -90,16 +125,31 @@ export function canonicalAnswerPassed(
 		records.length === expected.length &&
 		records.every((record, index) => {
 			if (!isStringRecord(record)) return false;
+			const expectedRecord = expected[index];
+			if (!expectedRecord) return false;
 			const keys = Object.keys(record);
 			return (
-				keys.length === expected[index]!.fields.length &&
+				keys.length === expectedRecord.fields.length &&
 				keys.every(
 					(key, fieldIndex) =>
-						key === expected[index]!.fields[fieldIndex]!.key,
+						key === expectedRecord.fields[fieldIndex]?.key,
 				)
 			);
 		})
 	);
+}
+
+function canonicalValuePlaceholderTemplate(
+	records: readonly CanonicalAnswerRecord[],
+): Readonly<Record<string, string>> | Readonly<Record<string, string>>[] {
+	const templates = records.map((record) => {
+		const template: Record<string, string> = {};
+		for (const field of record.fields) {
+			template[field.key] = `<${field.key}>`;
+		}
+		return template;
+	});
+	return templates.length === 1 ? templates[0] ?? {} : templates;
 }
 
 export function answerContractPrompt(
@@ -107,12 +157,23 @@ export function answerContractPrompt(
 	task?: BenchmarkTask,
 ): string {
 	if (contract !== "canonical") {
-		return "Return only requested fields. Do not add a preamble, restate the task, or add tables, counts, or commentary unless requested.\nWhen a requested issue does not exist, explicitly state that the issue was not found; do not use generic absence wording.";
+		return [
+			"Return only requested fields. Do not add a preamble, restate the task, or add tables, counts, or commentary unless requested.",
+			"Copy every requested value character-for-character, including leading and trailing whitespace, line breaks, and Unicode punctuation, without Unicode normalization or any other normalization.",
+			"When a requested issue does not exist, explicitly state that the issue was not found; do not use generic absence wording.",
+		].join("\n");
 	}
-	const schema = task
-		? canonicalAnswerSchema(task).map((record) =>
-				record.fields.map((field) => field.key),
-			)
-		: [];
-	return `${CANONICAL_ANSWER_CONTRACT}\nSchema key order: ${JSON.stringify(schema)}`;
+	const records = task ? canonicalAnswerSchema(task) : [];
+	const schema = records.map((record) =>
+		record.fields.map((field) => field.key),
+	);
+	const shape = records.length === 1
+		? "one JSON object with exactly the listed keys in the listed order"
+		: `one JSON array with exactly ${records.length} ordered JSON objects`;
+	return [
+		CANONICAL_ANSWER_CONTRACT,
+		`Exact top-level JSON shape: ${shape}.`,
+		`Schema key order: ${JSON.stringify(schema)}`,
+		`Value-placeholder template derived only from keys: ${JSON.stringify(canonicalValuePlaceholderTemplate(records))}`,
+	].join("\n");
 }

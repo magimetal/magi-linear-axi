@@ -65,8 +65,14 @@ function stringValue(value: unknown): string | undefined {
 		: undefined;
 }
 
-function optionalStringValue(value: unknown): string | undefined {
-	return typeof value === "string" ? value.trim() : undefined;
+function exactStringValue(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
+}
+
+function optionalExactStringValue(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
 }
 
 function nodes(value: unknown): Record<string, unknown>[] {
@@ -82,7 +88,7 @@ function teamFromValue(value: unknown): TeamSnapshot | undefined {
 	const team = record(value);
 	const id = stringValue(team.id);
 	const key = stringValue(team.key);
-	const name = stringValue(team.name);
+	const name = exactStringValue(team.name);
 	if (!id || !key || !name) {
 		return undefined;
 	}
@@ -95,7 +101,7 @@ function commentsFromIssue(issue: Record<string, unknown>): CommentSnapshot[] {
 		if (!id) {
 			return [];
 		}
-		const body = stringValue(comment.body);
+		const body = exactStringValue(comment.body);
 		return [
 			{
 				id,
@@ -115,7 +121,7 @@ function relationsFromIssue(
 		if (!type || !relatedIdentifier) {
 			return [];
 		}
-		const relatedTitle = stringValue(relatedIssue.title);
+		const relatedTitle = exactStringValue(relatedIssue.title);
 		return [
 			{ type, relatedIdentifier, ...(relatedTitle ? { relatedTitle } : {}) },
 		];
@@ -127,7 +133,7 @@ function relationsFromIssue(
 		if (!type || !relatedIdentifier) {
 			return [];
 		}
-		const relatedTitle = stringValue(relatedIssue.title);
+		const relatedTitle = exactStringValue(relatedIssue.title);
 		return [
 			{ type, relatedIdentifier, ...(relatedTitle ? { relatedTitle } : {}) },
 		];
@@ -139,12 +145,12 @@ function issuesFromData(data: Record<string, unknown>): IssueSnapshot[] {
 	return nodes(data.issues).flatMap((issue) => {
 		const id = stringValue(issue.id);
 		const identifier = stringValue(issue.identifier);
-		const title = stringValue(issue.title);
+		const title = exactStringValue(issue.title);
 		if (!id || !identifier || !title) {
 			return [];
 		}
-		const stateName = stringValue(record(issue.state).name);
-		const url = stringValue(issue.url);
+		const stateName = exactStringValue(record(issue.state).name);
+		const url = exactStringValue(issue.url);
 		const team = teamFromValue(issue.team);
 		return [
 			{
@@ -164,12 +170,12 @@ function issuesFromData(data: Record<string, unknown>): IssueSnapshot[] {
 function projectsFromData(data: Record<string, unknown>): ProjectSnapshot[] {
 	return nodes(data.projects).flatMap((project) => {
 		const id = stringValue(project.id);
-		const name = stringValue(project.name);
+		const name = exactStringValue(project.name);
 		if (!id || !name) {
 			return [];
 		}
-		const url = stringValue(project.url);
-		const statusName = optionalStringValue(record(project.status).name);
+		const url = exactStringValue(project.url);
+		const statusName = optionalExactStringValue(record(project.status).name);
 		return [
 			{
 				id,
@@ -343,7 +349,7 @@ export async function captureSnapshot(
 			pageInfo.hasNextPage === false &&
 			stringValue(match?.id) === candidate.id &&
 			stringValue(match?.identifier) === candidate.identifier &&
-			stringValue(match?.title) === candidate.title;
+			exactStringValue(match?.title) === candidate.title;
 		if (candidateMatches) {
 			searchIssueIdentifier = candidate.identifier;
 			break;

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LINEAR_GRAPHQL_ENDPOINT } from "./graphql.js";
 import { redactSecrets, toolCall } from "./safety.js";
+import { parsedToolCallKind } from "./types.js";
 import type {
 	ClaudeUsage,
 	Condition,
@@ -24,6 +25,8 @@ export interface ClaudeCommandOptions {
 	model: string;
 	prompt: string;
 	mcpConfigPath?: string;
+	/** Provider-enforced response schema for canonical benchmark answers. */
+	jsonSchema?: unknown;
 	/** Absolute per-case AXI broker wrapper used for command-scoped Bash permission. */
 	axiBin?: string;
 }
@@ -82,16 +85,6 @@ function contentFromMessage(
 		return contentItems(event.content);
 	}
 	return [];
-}
-
-function toolKind(name: string): ParsedToolCall["kind"] {
-	if (name.toLowerCase() === "bash") {
-		return "bash";
-	}
-	if (name.toLowerCase().startsWith("mcp__")) {
-		return "mcp";
-	}
-	return "other";
 }
 
 function addUsage(
@@ -160,10 +153,13 @@ function buildPhaseMetrics(options: {
 	};
 	if (options.streamMalformed) return metrics;
 
-	if (!options.toolArgumentsMalformed && options.toolCalls.length > 0) {
+	const userToolCalls = options.toolCalls.filter(
+		(call) => call.kind !== "structured_output",
+	);
+	if (!options.toolArgumentsMalformed && userToolCalls.length > 0) {
 		add(
 			"assistantToolArguments",
-			options.toolCalls.map((call) => JSON.stringify(call.input) ?? "").join(""),
+			userToolCalls.map((call) => JSON.stringify(call.input) ?? "").join(""),
 		);
 	}
 
@@ -189,7 +185,7 @@ function buildPhaseMetrics(options: {
 
 	if (!options.toolResultsMalformed && options.toolResults.length > 0) {
 		const toolIds = new Set(
-			options.toolCalls.flatMap((call) => call.id ? [call.id] : []),
+			userToolCalls.flatMap((call) => call.id ? [call.id] : []),
 		);
 		const linked = options.toolResults.filter((result) => toolIds.has(result.toolUseId));
 		if (linked.length > 0) {
@@ -297,7 +293,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 				);
 				if (name && existing.name === "unknown") {
 					existing.name = name;
-					existing.kind = toolKind(name);
+					existing.kind = parsedToolCallKind(name);
 				}
 			}
 			return;
@@ -312,7 +308,6 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		}
 		const input = item.input ?? item.arguments ?? {};
 		const parsed = toolCall(name, input, id);
-		parsed.kind = toolKind(name);
 		toolCalls.push(parsed);
 		if (id) {
 			toolCallsById.set(id, parsed);
@@ -607,6 +602,13 @@ export function buildClaudeArgs(options: ClaudeCommandOptions): string[] {
 		);
 	} else {
 		args.push("--tools", "");
+	}
+	if (options.jsonSchema !== undefined) {
+		const serializedSchema = JSON.stringify(options.jsonSchema);
+		if (serializedSchema === undefined) {
+			throw new Error("Claude JSON schema must be JSON-serializable");
+		}
+		args.push("--json-schema", serializedSchema);
 	}
 	// Claude's tool-list flags are variadic and otherwise consume the positional prompt.
 	args.push("--", options.prompt);

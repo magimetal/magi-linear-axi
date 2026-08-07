@@ -17,12 +17,12 @@ export { AXI_OUTPUT_MAX_UNICODE_CODE_POINTS } from "./representability.js";
 export const AXI_COMMENT_BODY_MAX_CHARACTERS = AXI_OUTPUT_MAX_UNICODE_CODE_POINTS;
 
 function normalizedExactValue(value: string): string {
-	return value.trim();
+	return value;
 }
 
 function requiredExactValue(label: string, value: string): string {
 	const normalized = normalizedExactValue(value);
-	if (!normalized || !isAxiRepresentable(normalized)) {
+	if (!normalized.trim().length || !isAxiRepresentable(normalized)) {
 		throw new Error(
 			`cannot generate tasks: required ${label} is not representable in AXI's default output (maximum ${AXI_OUTPUT_MAX_UNICODE_CODE_POINTS} Unicode code points)`,
 		);
@@ -60,10 +60,7 @@ function representableRelation(
 ): IssueSnapshot["relations"][number] | undefined {
 	if (!isRepresentableIssue(issue)) return undefined;
 	return issue.relations.find((relation) =>
-		Boolean(
-			optionalExactValue(relation.type) &&
-			optionalExactValue(relation.relatedIdentifier),
-		),
+		Boolean(optionalExactValue(relation.relatedIdentifier)),
 	);
 }
 
@@ -191,7 +188,6 @@ function canonicalForTask(
 		"project status": "status",
 		"project URL": "url",
 		"base issue identifier": "base_identifier",
-		"relation type": "type",
 		"related issue identifier": "related_identifier",
 		"related issue title": "related_title",
 		"invalid issue is explicitly absent": "error",
@@ -251,7 +247,7 @@ function confirmedAbsentIdentifier(snapshot: LinearSnapshot): string {
 	const rawIdentifier = snapshot.confirmedAbsentIssueIdentifier;
 	if (typeof rawIdentifier !== "string") throw new Error("cannot generate tasks: snapshot is missing confirmedAbsentIssueIdentifier");
 	const identifier = normalizedExactValue(rawIdentifier);
-	if (!identifier) {
+	if (!identifier.trim().length) {
 		throw new Error(
 			"cannot generate tasks: snapshot is missing confirmedAbsentIssueIdentifier",
 		);
@@ -261,10 +257,10 @@ function confirmedAbsentIdentifier(snapshot: LinearSnapshot): string {
 			`cannot generate tasks: confirmedAbsentIssueIdentifier exceeds AXI's default output limit of ${AXI_OUTPUT_MAX_UNICODE_CODE_POINTS} Unicode code points`,
 		);
 	}
-	const normalized = identifier.toUpperCase();
+	const normalized = identifier.trim().toUpperCase();
 	if (
 		snapshot.issues.some(
-			(issue) => normalizedExactValue(issue.identifier).toUpperCase() === normalized,
+			(issue) => normalizedExactValue(issue.identifier).trim().toUpperCase() === normalized,
 		)
 	) {
 		throw new Error(
@@ -290,7 +286,7 @@ function commentTask(issue: IssueSnapshot): BenchmarkTask | undefined {
 		"issue-comments",
 		"investigation",
 		"Read one issue comment",
-		`Read the comments for the existing issue identifier <${issue.identifier}>. Find comment <${comment.id}> and report only that exact comment ID and body. Do not infer comments that the tool did not return.`,
+		`Read the comments for the existing issue identifier <${issue.identifier}>. Find comment <${comment.id}> and report only that exact comment ID and body. Copy every character, including leading and trailing whitespace, line breaks, and Unicode punctuation; do not normalize the comment body or infer comments that the tool did not return.`,
 		facts,
 		[
 			"Use a comment-list/read operation.",
@@ -382,17 +378,16 @@ function relationTask(issue: IssueSnapshot): BenchmarkTask | undefined {
 		"relation-traversal",
 		"investigation",
 		"Read an issue relation",
-		`Read the relations returned for the existing issue identifier <${issue.identifier}>. Report the base issue identifier, relation type, related issue identifier${relatedTitle ? ", and related issue title when returned" : ""}. Do not assume a second related-issue lookup is available; use only facts returned by the relation read. Read-only access only.`,
+		`Read the relations returned for the existing issue identifier <${issue.identifier}>. Report the base issue identifier, related issue identifier${relatedTitle ? ", and related issue title when returned" : ""}. Do not assume a second related-issue lookup is available; use only facts returned by the relation read. Read-only access only.`,
 		[
 			contains("base issue identifier", issue.identifier),
-			contains("relation type", relation.type),
 			contains("related issue identifier", relation.relatedIdentifier),
 			...(relatedTitle
 				? [contains("related issue title", relatedTitle)]
 				: []),
 		],
 		[
-			"Use the issue relation list/read operation and report its returned base, type, and related issue facts.",
+			"Use the issue relation list/read operation and report its returned base and related issue facts.",
 			"Do not invent a relation or related title when none is returned.",
 		],
 		1,

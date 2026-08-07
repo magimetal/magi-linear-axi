@@ -1,5 +1,139 @@
 import type { BenchmarkResult, LinearSnapshot } from "../src/types.js";
 
+export function structuredOutputStream(condition: "axi" | "mcp"): string {
+	const readCall = condition === "axi"
+		? {
+				id: "read-axi",
+				name: "Bash",
+				input: {
+					command: "/tmp/bin/magi-linear-axi issue view ENG-10 --fields compact",
+				},
+			}
+		: {
+				id: "read-mcp",
+				name: "mcp__linear__get_issue",
+				input: { id: "ENG-10" },
+			};
+	const readResult = condition === "axi"
+		? 'issue:\n  identifier: "ENG-10"\n  title: "Improve query latency"'
+		: JSON.stringify({ id: "ENG-10", title: "Improve query latency" });
+	const structuredId = `structured-${condition}`;
+	const structuredResult = "structured-output-ack";
+	const terminalAnswer = JSON.stringify({
+		identifier: "ENG-10",
+		title: "Improve query latency",
+	});
+	return [
+		{
+			type: "assistant",
+			message: { content: [{ type: "tool_use", ...readCall }] },
+		},
+		{
+			type: "user",
+			message: {
+				content: [{
+					type: "tool_result",
+					tool_use_id: readCall.id,
+					content: [{ type: "text", text: readResult }],
+					is_error: false,
+				}],
+			},
+		},
+		{
+			type: "assistant",
+			message: {
+				content: [{
+					type: "tool_use",
+					id: structuredId,
+					name: "StructuredOutput",
+					input: {
+						value: terminalAnswer,
+						schema: { type: "object" },
+					},
+				}],
+			},
+		},
+		{
+			type: "user",
+			message: {
+				content: [{
+					type: "tool_result",
+					tool_use_id: structuredId,
+					content: [{ type: "text", text: structuredResult }],
+					is_error: false,
+				}],
+			},
+		},
+		{ type: "result", subtype: "success", result: terminalAnswer },
+	].map((event) => JSON.stringify(event)).join("\n");
+}
+
+export function invalidCanonicalStructuredOutputStream(
+	condition: "axi" | "mcp" = "axi",
+): string {
+	const readCall = condition === "axi"
+		? {
+				id: "invalid-read-axi",
+				name: "Bash",
+				input: { command: "magi-linear-axi issue view ENG-999 --fields compact" },
+			}
+		: {
+				id: "invalid-read-mcp",
+				name: "mcp__linear__get_issue",
+				input: { id: "ENG-999" },
+			};
+	const readError = condition === "axi" ? "issue not found" : "entity not found: issue";
+	const structuredId = `invalid-schema-${condition}`;
+	const structuredResult = "schema accepted";
+	const answer = '{"error":"issue ENG-999 not found"}';
+	return [
+		{
+			type: "assistant",
+			message: { content: [{ type: "tool_use", ...readCall }] },
+		},
+		{
+			type: "user",
+			message: {
+				content: [{
+					type: "tool_result",
+					tool_use_id: readCall.id,
+					content: [{ type: "text", text: readError }],
+					is_error: true,
+				}],
+			},
+		},
+		{
+			type: "assistant",
+			message: {
+				content: [{
+					type: "tool_use",
+					id: structuredId,
+					name: "StructuredOutput",
+					input: {
+						schema: {
+							type: "object",
+							properties: { error: { type: "string" } },
+						},
+						value: { error: answer },
+					},
+				}],
+			},
+		},
+		{
+			type: "user",
+			message: {
+				content: [{
+					type: "tool_result",
+					tool_use_id: structuredId,
+					content: [{ type: "text", text: structuredResult }],
+					is_error: false,
+				}],
+			},
+		},
+		{ type: "result", subtype: "success", result: answer },
+	].map((event) => JSON.stringify(event)).join("\n");
+}
+
 export function richSnapshot(): LinearSnapshot {
 	return {
 		version: 1,
@@ -146,6 +280,7 @@ export function result(
 		expectedTaskIds: ["issue-lookup"],
 		expectedRepeatCount: 1,
 		judgeEnabled: false,
+		timestamp: "2026-08-05T12:00:00.000Z",
 		startedAt: "2026-08-05T12:00:00.000Z",
 		completedAt: "2026-08-05T12:00:01.000Z",
 		wallTimeMs: 1000,
@@ -156,6 +291,7 @@ export function result(
 		harnessSourceHash: "source-hash",
 		axiBinaryHash: "axi-binary-hash",
 		claudeVersion: "claude 1.0.0",
+		phaseMetrics: { coverage: [] },
 		inputTokens: 10,
 		cacheReadInputTokens: 0,
 		cacheCreationInputTokens: 0,

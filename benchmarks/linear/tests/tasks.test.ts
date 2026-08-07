@@ -243,7 +243,7 @@ describe("dynamic task generation", () => {
 		expect(keys("issue-comments")).toEqual([["comment_id", "body"]]);
 		expect(keys("project-lookup")).toEqual([["name", "url", "status"]]);
 		expect(keys("relation-traversal")).toEqual([
-			["base_identifier", "type", "related_identifier", "related_title"],
+			["base_identifier", "related_identifier", "related_title"],
 		]);
 		expect(keys("compare-issues")).toEqual([
 			["identifier", "title", "state"],
@@ -400,9 +400,9 @@ describe("dynamic task generation", () => {
 		expect(relation).toBeDefined();
 		expect(relation?.requiredFacts).toEqual([
 			{ label: "base issue identifier", kind: "contains", value: "ENG-10" },
-			{ label: "relation type", kind: "contains", value: "blocks" },
 			{ label: "related issue identifier", kind: "contains", value: "ENG-11" },
 		]);
+		expect(JSON.stringify(relation)).not.toContain("blocks");
 		expect(JSON.stringify(relation)).not.toContain("🙂".repeat(241));
 	});
 
@@ -438,6 +438,60 @@ describe("dynamic task generation", () => {
 			value: body,
 		});
 		expect(Array.from(body)).toHaveLength(240);
+	});
+
+	it("preserves exact source whitespace and Unicode punctuation in facts and prompts", () => {
+		const snapshot = richSnapshot();
+		const identifier = " ENG-10 ";
+		const title = "  Fix — latency  ";
+		const commentBody = "  Keep “every” character.\n  ";
+		snapshot.searchIssueIdentifier = identifier;
+		snapshot.confirmedAbsentIssueIdentifier = " ENG-999999999 ";
+		snapshot.issues[0] = {
+			...snapshot.issues[0]!,
+			identifier,
+			title,
+			stateName: " In Progress ",
+			comments: [{ id: " comment-1 ", body: commentBody }],
+		};
+		const manifest = generateTasks(snapshot);
+		const lookup = manifest.tasks.find((task) => task.id === "issue-lookup");
+		const search = manifest.tasks.find((task) => task.id === "issue-search");
+		const comments = manifest.tasks.find((task) => task.id === "issue-comments");
+		const invalid = manifest.tasks.find((task) => task.id === "invalid-issue");
+		expect(lookup?.requiredFacts).toContainEqual({
+			label: "issue identifier",
+			kind: "contains",
+			value: identifier,
+			source: "issue_view",
+		});
+		expect(lookup?.requiredFacts).toContainEqual({
+			label: "issue title",
+			kind: "contains",
+			value: title,
+			source: "issue_view",
+		});
+		expect(search?.requiredOperations[0]?.operand).toBe(title);
+		expect(comments?.requiredFacts).toContainEqual({
+			label: "selected comment body",
+			kind: "contains",
+			value: commentBody,
+		});
+		expect(comments?.prompt).toContain("character");
+		expect(comments?.prompt).toContain("Unicode punctuation");
+		expect(invalid?.requiredFacts).toContainEqual({
+			label: "invalid issue is explicitly absent",
+			kind: "not_found",
+			value: " ENG-999999999 ",
+			source: "issue_view",
+		});
+	});
+
+	it("rejects required values that contain only whitespace", () => {
+		const snapshot = richSnapshot();
+		snapshot.searchIssueIdentifier = snapshot.issues[0]!.identifier;
+		snapshot.issues[0] = { ...snapshot.issues[0]!, title: "   " };
+		expect(() => generateTasks(snapshot)).toThrow(/issue title/u);
 	});
 
 	it("does not depend on mutable global counters", () => {

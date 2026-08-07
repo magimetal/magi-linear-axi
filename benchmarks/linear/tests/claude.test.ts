@@ -11,6 +11,7 @@ import {
 	parseClaudeStream,
 } from "../src/claude.js";
 import { toolUseCounts } from "../src/grader.js";
+import { structuredOutputStream } from "./fixtures.js";
 
 const stream = [
 	JSON.stringify({
@@ -166,6 +167,94 @@ describe("Claude stream-json backend", () => {
 				"linkedToolResultText",
 			],
 		});
+	});
+
+	it.each(["axi", "mcp"] as const)(
+		"parses the provider StructuredOutput transport without counting it (%s)",
+		(condition) => {
+			const parsed = parseClaudeStream(structuredOutputStream(condition));
+			const userCall = parsed.toolCalls.find(
+				(call) => call.kind !== "structured_output",
+			);
+			const structuredCall = parsed.toolCalls.find(
+				(call) => call.kind === "structured_output",
+			);
+			expect(userCall).toBeDefined();
+			expect(structuredCall).toMatchObject({
+				name: "StructuredOutput",
+				id: `structured-${condition}`,
+			});
+			expect(parsed.finalAnswer).toBe(
+				'{"identifier":"ENG-10","title":"Improve query latency"}',
+			);
+			expect(parsed.toolResults).toHaveLength(2);
+			expect(toolUseCounts(parsed)).toEqual(
+				condition === "axi"
+					? { total: 1, bash: 1, mcp: 0 }
+					: { total: 1, bash: 0, mcp: 1 },
+			);
+			expect(parsed.phaseMetrics.assistantToolArguments).toEqual(
+				size(JSON.stringify(userCall?.input)),
+			);
+			expect(parsed.phaseMetrics.linkedToolResultText).toEqual(
+				size(
+					condition === "axi"
+						? 'issue:\n  identifier: "ENG-10"\n  title: "Improve query latency"'
+						: '{"id":"ENG-10","title":"Improve query latency"}',
+				),
+			);
+			expect(parsed.phaseMetrics.terminalAnswerText).toEqual(
+				size(parsed.finalAnswer),
+			);
+		},
+	);
+
+	it("does not create a tool-argument phase for an internal-only transport", () => {
+		const parsed = parseClaudeStream([
+			JSON.stringify({
+				type: "assistant",
+				message: {
+					content: [{
+						type: "tool_use",
+						id: "structured-only",
+						name: "StructuredOutput",
+						input: { value: "final" },
+					}],
+				},
+			}),
+			JSON.stringify({
+				type: "user",
+				message: {
+					content: [{
+						type: "tool_result",
+						tool_use_id: "structured-only",
+						content: [{ type: "text", text: "final" }],
+						is_error: false,
+					}],
+				},
+			}),
+			JSON.stringify({ type: "result", subtype: "success", result: "final" }),
+		].join("\n"));
+		expect(parsed.phaseMetrics).not.toHaveProperty("assistantToolArguments");
+		expect(parsed.phaseMetrics.terminalAnswerText).toEqual(size("final"));
+	});
+
+	it("recognizes only the exact StructuredOutput provider tool name", () => {
+		const parsed = parseClaudeStream([
+			"StructuredOutput",
+			"structuredoutput",
+			"StructuredOutputExtra",
+		].map((name, index) => JSON.stringify({
+			type: "assistant",
+			message: {
+				content: [{ type: "tool_use", id: `name-${index}`, name, input: {} }],
+			},
+		})).join("\n"));
+		expect(parsed.toolCalls.map((call) => call.kind)).toEqual([
+			"structured_output",
+			"other",
+			"other",
+		]);
 	});
 
 	it("preserves long final answers and provider-reported output tokens exactly", () => {
@@ -559,7 +648,29 @@ describe("Claude stream-json backend", () => {
 		expect(axiArgs).toContain("");
 		expect(axiArgs).toContain("--no-session-persistence");
 		expect(axiArgs).toContain("--disable-slash-commands");
+		expect(axiArgs).not.toContain("--json-schema");
 		expect(axiArgs.slice(-2)).toEqual(["--", "task"]);
+		const schema = {
+			type: "object",
+			properties: { identifier: { type: "string" } },
+			required: ["identifier"],
+			additionalProperties: false,
+		};
+		const schemaArgs = buildClaudeArgs({
+			condition: "judge",
+			model: "claude-sonnet-4-6",
+			prompt: "task",
+			jsonSchema: schema,
+		});
+		const schemaIndex = schemaArgs.indexOf("--json-schema");
+		const separatorIndex = schemaArgs.indexOf("--");
+		expect(schemaIndex).toBeGreaterThan(-1);
+		expect(schemaIndex).toBe(separatorIndex - 2);
+		expect(schemaArgs.slice(schemaIndex, schemaIndex + 2)).toEqual([
+			"--json-schema",
+			JSON.stringify(schema),
+		]);
+		expect(schemaArgs.slice(-2)).toEqual(["--", "task"]);
 		const mcpArgs = buildClaudeArgs({
 			condition: "mcp",
 			model: "claude-sonnet-4-6",

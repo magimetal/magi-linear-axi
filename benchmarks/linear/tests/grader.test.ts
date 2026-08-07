@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { parseClaudeStream } from "../src/claude.js";
 import {
+	boundedToolEvidence,
 	classifyErrors,
 	gradeDeterministically,
+	linkedToolEvidenceCount,
 	mentionsNotFound,
 	runJudge,
 	toolUseCounts,
 } from "../src/grader.js";
+import { classifyOperations } from "../src/operations.js";
+import { scanAudit } from "../src/safety.js";
+import {
+	invalidCanonicalStructuredOutputStream,
+	structuredOutputStream,
+} from "./fixtures.js";
 import type { BenchmarkTask, ParsedClaudeStream } from "../src/types.js";
 
 const task: BenchmarkTask = {
@@ -38,6 +47,8 @@ function stream(
 			outputTokens: 0,
 			outputTokensCovered: true,
 		},
+		usageCoverage: { outputTokens: true },
+		phaseMetrics: { coverage: [] },
 		turns: 1,
 		errors: [],
 		parseErrors: 0,
@@ -50,6 +61,117 @@ const evidence = [
 ];
 
 describe("deterministic grading", () => {
+	it.each(["axi", "mcp"] as const)(
+		"treats StructuredOutput as internal final-answer transport in %s",
+		(condition) => {
+			const parsed = parseClaudeStream(structuredOutputStream(condition));
+			const audit = scanAudit(
+				condition,
+				parsed.toolCalls,
+				condition === "axi" ? "/tmp/bin/magi-linear-axi" : undefined,
+			);
+			const operations = classifyOperations(
+				condition,
+				parsed.toolCalls,
+				"magi-linear-axi",
+			);
+			const grade = gradeDeterministically(
+				task,
+				parsed.finalAnswer,
+				condition,
+				parsed,
+				audit.safetyViolations,
+			);
+			expect(parsed.toolCalls.map((call) => call.kind)).toEqual([
+				condition === "axi" ? "bash" : "mcp",
+				"structured_output",
+			]);
+			expect(audit).toEqual({ safetyViolations: [], policyIncidents: [] });
+			expect(operations).toHaveLength(1);
+			expect(operations[0]).toMatchObject({
+				callIndex: 0,
+				toolUseId: `read-${condition}`,
+			});
+			expect(grade.passed).toBe(true);
+			expect(grade.observedToolCalls).toBe(1);
+			expect(grade.operationTrace).toEqual(["issue_view"]);
+			expect(grade.factChecks).toEqual([
+				{ label: "identifier", passed: true, grounded: true },
+				{ label: "title", passed: true, grounded: true },
+		]);
+		expect(linkedToolEvidenceCount(parsed)).toBe(1);
+		expect(boundedToolEvidence(parsed)).toEqual({
+			calls: [{
+				id: `read-${condition}`,
+				name: condition === "axi" ? "Bash" : "mcp__linear__get_issue",
+				kind: condition === "axi" ? "bash" : "mcp",
+				input: condition === "axi"
+					? '{"command":"/tmp/bin/magi-linear-axi issue view ENG-10 --fields compact"}'
+					: '{"id":"ENG-10"}',
+			}],
+			results: [{
+				toolUseId: `read-${condition}`,
+				isError: false,
+				text: condition === "axi"
+					? 'issue:\n  identifier: "ENG-10"\n  title: "Improve query latency"'
+					: '{"id":"ENG-10","title":"Improve query latency"}',
+			}],
+		});
+		},
+	);
+
+	it.each(["axi", "mcp"] as const)(
+		"does not accept StructuredOutput without a user read in %s",
+		(condition) => {
+			const structuredId = `only-structured-${condition}`;
+			const parsed = stream(
+				[{
+					id: structuredId,
+					name: "StructuredOutput",
+					kind: "structured_output",
+					input: { value: "ENG-10" },
+				}],
+				[{ toolUseId: structuredId, text: "ENG-10 Improve query latency", isError: false }],
+			);
+			parsed.finalAnswer = "ENG-10 Improve query latency";
+			const audit = scanAudit(condition, parsed.toolCalls);
+			const grade = gradeDeterministically(
+				task,
+				parsed.finalAnswer,
+				condition,
+				parsed,
+				audit.safetyViolations,
+			);
+			expect(audit.safetyViolations).toHaveLength(0);
+			expect(toolUseCounts(parsed)).toEqual({ total: 0, bash: 0, mcp: 0 });
+			expect(linkedToolEvidenceCount(parsed)).toBe(0);
+			expect(boundedToolEvidence(parsed)).toEqual({ calls: [], results: [] });
+			expect(grade.toolUseObserved).toBe(false);
+			expect(grade.observedToolCalls).toBe(0);
+			expect(grade.operationTrace).toEqual([]);
+			expect(grade.factChecks.every((fact) => !fact.grounded)).toBe(true);
+			expect(grade.passed).toBe(false);
+		},
+	);
+
+	it("excludes a structured-output error from ordinary linked tool errors", () => {
+		const structuredId = "structured-error";
+		const parsed = stream(
+			[{
+				id: structuredId,
+				name: "StructuredOutput",
+				kind: "structured_output",
+				input: {},
+			}],
+			[{ toolUseId: structuredId, text: "schema rejected", isError: true }],
+		);
+		parsed.errors = ["Claude Code returned a tool error"];
+		expect(classifyErrors(parsed, task)).toMatchObject({
+			toolErrorCount: 0,
+			infrastructureErrorCount: 0,
+		});
+	});
+
 	it("requires condition tool use, minimum calls, final facts, and linked evidence", () => {
 		const grade = gradeDeterministically(
 			task,
@@ -134,6 +256,194 @@ describe("deterministic grading", () => {
 				expect(failed.formatPassed, invalid).toBe(false);
 				expect(failed.factChecks.every((fact) => fact.grounded)).toBe(true);
 			}
+		}
+	});
+
+	it("grounds escaped canonical comment facts from AXI and MCP serialized results", () => {
+		const commentBody = `Line "one" \\ path
+next — punctuation`;
+		const commentTask: BenchmarkTask = {
+			...task,
+			requiredFacts: [
+				{
+					label: "selected comment ID",
+					kind: "contains",
+					value: "comment-1",
+				},
+				{
+					label: "selected comment body",
+					kind: "contains",
+					value: commentBody,
+				},
+			],
+			canonicalAnswer: [{
+				fields: [
+					{ key: "comment_id", factLabel: "selected comment ID" },
+					{ key: "body", factLabel: "selected comment body" },
+				],
+			}],
+		};
+		const answer = JSON.stringify({ comment_id: "comment-1", body: commentBody });
+		for (const [condition, call, resultText] of [
+			[
+				"axi",
+				{
+					id: "comment-axi",
+					name: "Bash",
+					kind: "bash",
+					input: {
+						command: "magi-linear-axi issue comment list ENG-10 --fields compact --limit=10",
+					},
+				},
+				`issue:\n  comments:\n    nodes[1]:\n      - id: "comment-1"\n        body: ${JSON.stringify(commentBody)}`,
+			],
+			[
+				"mcp",
+				{
+					id: "comment-mcp",
+					name: "mcp__linear__list_comments",
+					kind: "mcp",
+					input: { issueId: "ENG-10", limit: 10 },
+				},
+				JSON.stringify({
+					comments: [{
+						id: "comment-1",
+						body: commentBody,
+						createdAt: "2026-08-05T12:00:00.000Z",
+					}],
+					hasNextPage: false,
+				}),
+			],
+		] as const) {
+			const result = gradeDeterministically(
+				commentTask,
+				answer,
+				condition,
+				stream(
+					[call],
+					[{ toolUseId: call.id, text: resultText, isError: false }],
+				),
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(result.passed, condition).toBe(true);
+			expect(result.factChecks, condition).toEqual([
+				{ label: "selected comment ID", passed: true, grounded: true },
+				{ label: "selected comment body", passed: true, grounded: true },
+			]);
+		}
+	});
+
+	it("requires canonical evidence to preserve case and whitespace exactly", () => {
+		const exactValue = "  Exact  Value\nNext  ";
+		const exactTask: BenchmarkTask = {
+			...task,
+			requiredFacts: [{ label: "exact value", kind: "contains", value: exactValue }],
+			canonicalAnswer: [{ fields: [{ key: "value", factLabel: "exact value" }] }],
+		};
+		const call = {
+			id: "exact-value",
+			name: "mcp__linear__get_issue",
+			kind: "mcp" as const,
+			input: { id: "ENG-10" },
+		};
+		for (const evidenceText of [
+			exactValue.trim(),
+			exactValue.toLowerCase(),
+			exactValue.replace(/\s+/gu, " ").trim(),
+		]) {
+			const canonical = gradeDeterministically(
+				exactTask,
+				JSON.stringify({ value: exactValue }),
+				"mcp",
+				stream([call], [{ toolUseId: call.id, text: evidenceText, isError: false }]),
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(canonical.passed, evidenceText).toBe(false);
+			expect(canonical.factChecks[0]).toEqual({
+				label: "exact value",
+				passed: false,
+				grounded: false,
+			});
+			const compact = gradeDeterministically(
+				exactTask,
+				exactValue,
+				"mcp",
+				stream([call], [{ toolUseId: call.id, text: evidenceText, isError: false }]),
+				[],
+			);
+			expect(compact.factChecks[0]?.grounded, evidenceText).toBe(true);
+		}
+	});
+
+	it("grades relation facts across AXI and MCP relation representations", () => {
+		const relationTask: BenchmarkTask = {
+			...task,
+			title: "Read relation",
+			requiredFacts: [
+				{ label: "base issue identifier", kind: "contains", value: "ENG-10" },
+				{ label: "related issue identifier", kind: "contains", value: "ENG-11" },
+				{ label: "related issue title", kind: "contains", value: "Tune cache behavior" },
+			],
+			canonicalAnswer: [{
+				fields: [
+					{ key: "base_identifier", factLabel: "base issue identifier" },
+					{ key: "related_identifier", factLabel: "related issue identifier" },
+					{ key: "related_title", factLabel: "related issue title" },
+				],
+			}],
+		};
+		const answer = JSON.stringify({
+			base_identifier: "ENG-10",
+			related_identifier: "ENG-11",
+			related_title: "Tune cache behavior",
+		});
+		for (const [condition, call, resultText] of [
+			[
+				"axi",
+				{
+					id: "relation-axi",
+					name: "Bash",
+					kind: "bash",
+					input: {
+						command: "magi-linear-axi issue relation list ENG-10 --fields compact --limit=10",
+					},
+				},
+				'issue:\n  identifier: "ENG-10"\n  relations:\n    nodes[1]:\n      - type: "blocks"\n        relatedIssue:\n          identifier: "ENG-11"\n          title: "Tune cache behavior"',
+			],
+			[
+				"mcp",
+				{
+					id: "relation-mcp",
+					name: "mcp__linear__get_issue",
+					kind: "mcp",
+					input: { id: "ENG-10", includeRelations: true },
+				},
+				JSON.stringify({
+					id: "ENG-10",
+					relations: {
+						blocks: [{ id: "ENG-11", title: "Tune cache behavior" }],
+						blockedBy: [],
+						relatedTo: [],
+						duplicateOf: null,
+					},
+				}),
+			],
+		] as const) {
+			const grade = gradeDeterministically(
+				relationTask,
+				answer,
+				condition,
+				stream([call], [{ toolUseId: call.id, text: resultText, isError: false }]),
+				[],
+				"magi-linear-axi",
+				"canonical",
+			);
+			expect(grade.passed, condition).toBe(true);
+			expect(grade.factChecks.every((fact) => fact.passed), condition).toBe(true);
 		}
 	});
 
@@ -378,6 +688,26 @@ describe("deterministic grading", () => {
 			[],
 		);
 		expect(missingEvidence.passed).toBe(false);
+
+		const canonicalNotFoundTask: BenchmarkTask = {
+			...notFoundTask,
+			canonicalAnswer: [{
+				fields: [{ key: "error", factLabel: "not found" }],
+			}],
+		};
+		const canonicalGrade = gradeDeterministically(
+			canonicalNotFoundTask,
+			'{"error":"issue ENG-999 not found"}',
+			"axi",
+			parseClaudeStream(invalidCanonicalStructuredOutputStream("axi")),
+			[],
+			"magi-linear-axi",
+			"canonical",
+		);
+		expect(canonicalGrade.passed).toBe(true);
+		expect(canonicalGrade.factChecks).toEqual([
+			{ label: "not found", passed: true, grounded: true },
+		]);
 
 		const axiGrade = gradeDeterministically(
 			notFoundTask,

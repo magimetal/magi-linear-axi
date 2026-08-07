@@ -82,6 +82,29 @@ describe("typed operation extraction and semantics", () => {
 		]);
 	});
 
+	it("skips StructuredOutput while retaining original user call indexes", () => {
+		const internal: ParsedToolCall = {
+			id: "structured-answer",
+			name: "StructuredOutput",
+			kind: "structured_output",
+			input: { value: "final" },
+		};
+		const observed = classifyOperations(
+			"axi",
+			[axiCalls[0]!, internal, axiCalls[1]!],
+			"/tmp/axi-wrapper",
+		);
+		expect(observed.map((operation) => operation.kind)).toEqual([
+			"issue_search",
+			"issue_view",
+		]);
+		expect(observed.map((operation) => operation.callIndex)).toEqual([0, 2]);
+		expect(observed.map((operation) => operation.toolUseId)).toEqual([
+			"axi-search",
+			"axi-view",
+		]);
+	});
+
 	it("extracts an exact operand from a double-quoted compact search", () => {
 		const calls: ParsedToolCall[] = [{
 			id: "axi-double-quoted-search",
