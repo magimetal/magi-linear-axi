@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assessCanonicalAdoption,
   aggregateResults,
   filterResults,
   latestMatrixRunId,
@@ -14,6 +15,42 @@ import {
   writeReports,
 } from "../src/report.js";
 import { result } from "./fixtures.js";
+
+function adoptionCohort(
+  compactOverrides: Parameters<typeof result>[0] = {},
+  canonicalOverrides: Parameters<typeof result>[0] = {},
+) {
+  const shared = {
+    matrixRunId: "adoption-run",
+    expectedConditions: ["axi"] as const,
+    expectedAnswerContracts: ["compact", "canonical"] as const,
+    expectedTaskIds: ["issue-lookup"],
+    expectedRepeatCount: 1,
+    judgeEnabled: true,
+    llmGrade: { status: "passed" as const, model: "judge" },
+    gradingMode: "deterministic+llm" as const,
+  };
+  return [
+    result({
+      ...shared,
+      resultId: "compact",
+      answerContract: "compact",
+      terminalAnswerCharacters: 100,
+      terminalAnswerBytes: 100,
+      outputTokens: 100,
+      ...compactOverrides,
+    }),
+    result({
+      ...shared,
+      resultId: "canonical",
+      answerContract: "canonical",
+      terminalAnswerCharacters: 80,
+      terminalAnswerBytes: 80,
+      outputTokens: 80,
+      ...canonicalOverrides,
+    }),
+  ];
+}
 
 const temporaryDirectories: string[] = [];
 
@@ -44,7 +81,7 @@ describe("report aggregation", () => {
     const aggregate = aggregateResults(results);
     expect(aggregate.runs).toBe(2);
     expect(aggregate.passed).toBe(1);
-    expect(aggregate.byCondition.map((row) => row.key)).toEqual(["axi", "mcp"]);
+    expect(aggregate.byCondition.map((row) => row.key)).toEqual(["axi/compact", "mcp/compact"]);
     expect(aggregate.byTask).toHaveLength(2);
     expect(aggregate.byCategory.map((row) => row.key)).toEqual([
       "axi/single_step",
@@ -159,7 +196,7 @@ describe("report aggregation", () => {
     const markdown = renderMarkdownReport([axi, mcp], aggregate);
     const csv = renderCsvReport(aggregate);
     expect(markdown).toContain(
-      "Largest fully covered measurable generated-phase AXI−MCP delta: assistantToolArguments (20 Unicode code points/run)",
+      "Largest fully covered measurable generated-phase AXI−MCP delta (compact): assistantToolArguments (20 Unicode code points/run)",
     );
     expect(markdown).toContain("linkedToolResultText` is subsequent input");
     for (const canary of canaries) {
@@ -354,6 +391,263 @@ describe("report aggregation", () => {
       taskManifestHashes: ["task-manifest-hash"],
     });
   });
+
+  it("validates condition × contract × task × repeat cohort cells", () => {
+    const contracts = ["compact", "canonical"] as const;
+    const conditions = ["axi", "mcp"] as const;
+    const cohort = conditions.flatMap((condition) =>
+      contracts.map((answerContract) => result({
+        resultId: `${condition}-${answerContract}`,
+        matrixRunId: "contract-cohort",
+        condition,
+        answerContract,
+        expectedConditions: [...conditions],
+        expectedAnswerContracts: [...contracts],
+        expectedTaskIds: ["issue-lookup"],
+        judgeEnabled: false,
+      })),
+    );
+    expect(validateCohort(cohort).results).toHaveLength(4);
+    expect(() => validateCohort(cohort.slice(0, -1))).toThrow(/missing expected cell/u);
+    expect(() => validateCohort([...cohort.slice(0, -1), cohort[0]!])).toThrow(/duplicate/u);
+    expect(() => validateCohort(cohort.map((item, index) => index === 0
+      ? { ...item, expectedAnswerContracts: ["compact"] }
+      : item))).toThrow(/mixed expected cohort metadata/u);
+  });
+
+  it("keeps uncovered answer-size metrics absent and aligns every CSV row", () => {
+    const uncovered = result({
+      outputTokensCovered: false,
+      terminalAnswerCharacters: undefined,
+      terminalAnswerBytes: undefined,
+    });
+    const aggregate = aggregateResults([uncovered]);
+    expect(aggregate.meanOutputTokens).toBeUndefined();
+    expect(aggregate.meanTerminalAnswerCharacters).toBeUndefined();
+    expect(aggregate.meanTerminalAnswerBytes).toBeUndefined();
+    const markdown = renderMarkdownReport([uncovered], aggregate);
+    expect(markdown).toContain("n/a (0/1)");
+    const [header, ...rows] = renderCsvReport(aggregate).trim().split("\n");
+    const headerCells = header!.split(",");
+    expect(headerCells.filter((cell) => cell === "answer_contract")).toHaveLength(1);
+    for (const row of rows) {
+      expect(row.split(",")).toHaveLength(headerCells.length);
+      if (row.split(",")[headerCells.indexOf("row_scope")] === "task") {
+        expect(row.split(",")[headerCells.indexOf("answer_contract")]).toBe("compact");
+      }
+      expect(row.split(",")[headerCells.indexOf("condition")]).toBe("axi");
+      expect(row.split(",")[headerCells.indexOf("mean_output_tokens")]).toBe("");
+    }
+  });
+
+  it("preserves established CSV columns before appending contract metrics", () => {
+    const [header] = renderCsvReport(aggregateResults([result()])).trim().split("\n");
+    const columns = header!.split(",");
+    const established = "row_scope,task_id,category,condition,runs,passes,pass_rate,deterministic_passes,llm_passes,llm_considered,judge_agreement,judge_agreement_considered,judge_agreement_rate,safety_violations,unsafe_runs,safety_rate,hard_safety_incidents,hard_safety_runs,hard_safety_rate,policy_incidents,policy_incident_runs,policy_incident_rate,command_errors,command_error_runs,command_error_rate,api_errors,api_error_runs,api_error_rate,other_tool_errors,other_tool_error_runs,other_tool_error_rate,infrastructure_errors,infrastructure_error_runs,infrastructure_error_rate,expected_errors,expected_error_runs,expected_error_rate,errors,error_runs,error_rate,mean_input_tokens,mean_cache_read_input_tokens,mean_cache_creation_input_tokens,mean_output_tokens,output_tokens_covered_runs,mean_reported_cost_usd,reported_cost_samples,missing_cost_count,mean_wall_time_ms,p50_wall_time_ms,p95_wall_time_ms,mean_turns,mean_tool_calls,p50_tool_calls,p95_tool_calls".split(",");
+    expect(columns.slice(0, established.length)).toEqual(established);
+    expect(columns.indexOf("answer_contract")).toBeGreaterThan(
+      columns.indexOf("retry_covered_runs"),
+    );
+  });
+
+  it("rejects legacy cohorts cleanly instead of migrating missing contracts", () => {
+    const legacy = {
+      ...result(),
+      expectedAnswerContracts: undefined,
+    } as unknown as ReturnType<typeof result>;
+    expect(assessCanonicalAdoption([legacy])).toMatchObject({
+      status: "not_evaluable",
+    });
+    expect(() => validateCohort([legacy])).toThrow(
+      /invalid expected answer contracts/u,
+    );
+  });
+
+  it("adopts on complete pairs with character reduction despite missing token coverage", () => {
+    const results = adoptionCohort(
+      { outputTokensCovered: false },
+      { outputTokensCovered: false },
+    );
+    expect(assessCanonicalAdoption(results)).toMatchObject({
+      status: "adopt",
+      terminalCharacterReduction: 0.2,
+    });
+  });
+
+  it("retains when complete data misses target or regresses quality and operations", () => {
+    expect(assessCanonicalAdoption(adoptionCohort(
+      { terminalAnswerCharacters: 100, outputTokens: 100 },
+      { terminalAnswerCharacters: 90, outputTokens: 90 },
+    ))).toMatchObject({ status: "retain" });
+    const regressed = assessCanonicalAdoption(adoptionCohort({}, {
+      turns: 3,
+      toolCalls: 2,
+      policyIncidentCount: 1,
+      infrastructureErrorCount: 1,
+      deterministicGrade: {
+        ...result().deterministicGrade,
+        passed: false,
+        factChecks: [{ label: "issue title", passed: false, grounded: false }],
+      },
+      llmGrade: { status: "passed", model: "judge" },
+    }));
+    expect(regressed.status).toBe("retain");
+    expect(regressed.reasons).toEqual(expect.arrayContaining([
+      expect.stringContaining("grounding"),
+      expect.stringContaining("judge agreement"),
+      expect.stringContaining("turns"),
+      expect.stringContaining("tool calls"),
+      expect.stringContaining("policy incidents"),
+      expect.stringContaining("infrastructure failures"),
+    ]));
+  });
+  it("retains when canonical quality regresses in MCP", () => {
+    const axi = adoptionCohort().map((item) => ({
+      ...item,
+      expectedConditions: ["axi", "mcp"] as const,
+    }));
+    const mcp = adoptionCohort().map((item) => ({
+      ...item,
+      resultId: `mcp-${item.answerContract}`,
+      condition: "mcp" as const,
+      expectedConditions: ["axi", "mcp"] as const,
+      bashToolCalls: 0,
+      mcpToolCalls: 1,
+      ...(item.answerContract === "canonical"
+        ? {
+            deterministicGrade: {
+              ...item.deterministicGrade,
+              passed: false,
+              formatPassed: false,
+              factChecks: [{ label: "fact", passed: false, grounded: false }],
+            },
+            llmGrade: { status: "failed" as const, model: "judge" },
+          }
+        : {}),
+    }));
+    const assessment = assessCanonicalAdoption([...axi, ...mcp]);
+    expect(assessment.status).toBe("retain");
+    expect(assessment.reasons).toContain(
+      "canonical deterministic grading or grounding is not fully passing",
+    );
+  });
+
+  it("supports token-only adoption at exactly 15% and isolates incident gates", () => {
+    const tokenOnly = adoptionCohort(
+      { terminalAnswerCharacters: undefined, outputTokens: 100 },
+      { terminalAnswerCharacters: undefined, outputTokens: 85 },
+    );
+    expect(assessCanonicalAdoption(tokenOnly)).toMatchObject({
+      status: "adopt",
+      outputTokenReduction: 0.15,
+    });
+
+    const unavailableAlternative = adoptionCohort(
+      { outputTokensCovered: false, terminalAnswerCharacters: 100 },
+      { outputTokensCovered: false, terminalAnswerCharacters: 90 },
+    );
+    expect(assessCanonicalAdoption(unavailableAlternative).status)
+      .toBe("not_evaluable");
+
+    for (const [field, reason] of [
+      ["safetyViolationCount", "hard safety incidents"],
+      ["commandErrorCount", "command errors"],
+      ["apiErrorCount", "API errors"],
+      ["toolErrorCount", "other tool errors"],
+    ] as const) {
+      const assessment = assessCanonicalAdoption(
+        adoptionCohort({}, { [field]: 1 }),
+      );
+      expect(assessment.status, field).toBe("retain");
+      expect(assessment.reasons, field).toContain(`${reason} increased`);
+    }
+  });
+
+
+  it("marks missing pairs, judges, or both size metrics not evaluable", () => {
+    expect(assessCanonicalAdoption(adoptionCohort().slice(0, 1)).status)
+      .toBe("not_evaluable");
+    expect(assessCanonicalAdoption(adoptionCohort({}, {
+      llmGrade: { status: "skipped", model: "judge" },
+    })).status).toBe("not_evaluable");
+    const noSize = adoptionCohort(
+      { outputTokensCovered: false, terminalAnswerCharacters: undefined },
+      { outputTokensCovered: false, terminalAnswerCharacters: undefined },
+    );
+    expect(assessCanonicalAdoption(noSize).status).toBe("not_evaluable");
+  });
+
+  it("renders adoption and covered size metrics without answer content", () => {
+    const results = adoptionCohort({}, {
+      finalAnswer: "sensitive-final-answer",
+      deterministicGrade: {
+        ...result().deterministicGrade,
+        reason: "sensitive-deterministic-reason",
+      },
+      llmGrade: {
+        status: "passed",
+        model: "judge",
+        rationale: "sensitive-judge-rationale",
+        output: "sensitive-judge-output",
+      },
+    });
+    const assessment = assessCanonicalAdoption(results);
+    const markdown = renderMarkdownReport(results);
+    const csv = renderCsvReport(aggregateResults(results), assessment);
+    expect(markdown).toContain("Canonical adoption assessment: adopt");
+    expect(markdown).toContain("Terminal character reduction: 20.0%");
+    expect(csv).toContain("canonical_adoption_status");
+    expect(csv).toContain(",adopt,");
+    expect(markdown).not.toContain("secret dynamic answer");
+    expect(csv).not.toContain("secret dynamic answer");
+    for (const sensitive of [
+      "sensitive-final-answer",
+      "sensitive-deterministic-reason",
+      "sensitive-judge-rationale",
+      "sensitive-judge-output",
+    ]) {
+      expect(markdown).not.toContain(sensitive);
+      expect(csv).not.toContain(sensitive);
+    }
+  });
+
+  it("writes filtered rows while assessing adoption from the complete cohort", async () => {
+    const directory = await mkdtemp(join(process.cwd(), "linear-filtered-report-test-"));
+    temporaryDirectories.push(directory);
+    const cohort = adoptionCohort();
+    const selected = filterResults(cohort, { answerContracts: ["canonical"] });
+    const markdownPath = join(directory, "report.md");
+    const csvPath = join(directory, "report.csv");
+    await writeReports(
+      markdownPath,
+      csvPath,
+      selected,
+      "adoption-run",
+      cohort,
+    );
+    const markdown = await readFile(markdownPath, "utf8");
+    const csv = await readFile(csvPath, "utf8");
+    expect(markdown).toContain("Canonical adoption assessment: adopt");
+    expect(markdown).toContain("axi/canonical");
+    expect(markdown).not.toContain("axi/compact");
+    expect(csv).toContain("canonical");
+    expect(csv).not.toContain(",compact,");
+    expect(csv).toContain(",adopt,");
+  });
+  it("keeps Markdown aggregate table columns aligned", () => {
+    const lines = renderMarkdownReport(adoptionCohort()).split("\n");
+    for (const heading of [
+      "## Summary by condition (per-run means)",
+      "## Per task and condition (per-run means)",
+    ]) {
+      const index = lines.indexOf(heading);
+      const table = lines.slice(index + 2, index + 5);
+      expect(table).toHaveLength(3);
+      expect(new Set(table.map((line) => line.split("|").length)).size).toBe(1);
+    }
+  });
+
+
 
   it("refuses to switch cohorts while writing already-filtered reports", async () => {
     const directory = await mkdtemp(join(process.cwd(), "linear-report-write-test-"));

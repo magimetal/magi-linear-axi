@@ -1,3 +1,4 @@
+import { fieldKey } from "./answer-contract.js";
 import { AXI_OUTPUT_MAX_UNICODE_CODE_POINTS, isAxiRepresentable } from "./representability.js";
 import type {
 	BenchmarkTask,
@@ -32,7 +33,7 @@ function requiredExactValue(label: string, value: string): string {
 function optionalExactValue(value: string | undefined): string | undefined {
 	if (value === undefined) return undefined;
 	const normalized = normalizedExactValue(value);
-	return normalized && isAxiRepresentable(normalized) ? normalized : undefined;
+	return isAxiRepresentable(normalized) ? normalized : undefined;
 }
 
 function isRepresentableCommentBody(
@@ -69,9 +70,12 @@ function representableRelation(
 function optionalContains(
 	label: string,
 	value: string | undefined,
+	allowEmpty = false,
 ): RequiredFact | undefined {
 	const normalized = optionalExactValue(value);
-	return normalized ? { label, kind: "contains", value: normalized } : undefined;
+	return normalized !== undefined && (allowEmpty || normalized.length > 0)
+		? { label, kind: "contains", value: normalized }
+		: undefined;
 }
 
 function contains(label: string, value: string): RequiredFact {
@@ -153,6 +157,54 @@ function defaultMinimumToolCalls(category: TaskCategory): number {
 	return category === "multi_step" ? 2 : 1;
 }
 
+
+function canonicalForTask(
+	id: string,
+	facts: RequiredFact[],
+): import("./types.js").CanonicalAnswerRecord[] {
+	const field = (key: string, factLabel: string) => ({ key, factLabel });
+	if (id === "compare-issues") {
+		const fields = (prefix: string) =>
+			facts
+				.filter((fact) => fact.label.startsWith(`${prefix} `))
+				.map((fact) =>
+					field(
+						fact.label
+							.replace(`${prefix} `, "")
+							.replace("workflow state", "state")
+							.replace("issue ", ""),
+						fact.label,
+					),
+				);
+		return [{ fields: fields("first") }, { fields: fields("second") }];
+	}
+	const keys: Record<string, string> = {
+		"issue identifier": "identifier",
+		"searched issue identifier": "identifier",
+		"issue title": "title",
+		"searched issue title": "title",
+		"workflow state": "state",
+		"issue URL": "url",
+		"selected comment ID": "comment_id",
+		"selected comment body": "body",
+		"project name": "name",
+		"project status": "status",
+		"project URL": "url",
+		"base issue identifier": "base_identifier",
+		"relation type": "type",
+		"related issue identifier": "related_identifier",
+		"related issue title": "related_title",
+		"invalid issue is explicitly absent": "error",
+	};
+	return [
+		{
+			fields: facts.map((fact) =>
+				field(keys[fact.label] ?? fieldKey(fact.label), fact.label),
+			),
+		},
+	];
+}
+
 function task(
 	id: string,
 	category: TaskCategory,
@@ -191,16 +243,13 @@ function task(
 		requiredOperations,
 		requiredFacts,
 		gradingHints,
+		canonicalAnswer: canonicalForTask(id, requiredFacts),
 	};
 }
 
 function confirmedAbsentIdentifier(snapshot: LinearSnapshot): string {
 	const rawIdentifier = snapshot.confirmedAbsentIssueIdentifier;
-	if (typeof rawIdentifier !== "string") {
-		throw new Error(
-			"cannot generate tasks: snapshot is missing confirmedAbsentIssueIdentifier",
-		);
-	}
+	if (typeof rawIdentifier !== "string") throw new Error("cannot generate tasks: snapshot is missing confirmedAbsentIssueIdentifier");
 	const identifier = normalizedExactValue(rawIdentifier);
 	if (!identifier) {
 		throw new Error(
@@ -254,7 +303,7 @@ function projectTask(project: ProjectSnapshot): BenchmarkTask | undefined {
 	if (!isRepresentableProject(project)) return undefined;
 	const facts: RequiredFact[] = [contains("project name", project.name)];
 	const urlFact = optionalContains("project URL", project.url);
-	const statusFact = optionalContains("project status", project.statusName);
+	const statusFact = optionalContains("project status", project.statusName, true);
 	if (urlFact) facts.push(urlFact);
 	if (statusFact) facts.push(statusFact);
 	const reportFields = [
@@ -627,34 +676,77 @@ function validRequiredOperation(operation: unknown): boolean {
 
 function validRequiredFact(fact: unknown): boolean {
 	if (!fact || typeof fact !== "object") return false;
-	const record = fact as { source?: unknown; value?: unknown };
+	const record = fact as {
+		label?: unknown;
+		kind?: unknown;
+		source?: unknown;
+		value?: unknown;
+	};
 	const valueValid =
 		record.value === undefined ||
-		(typeof record.value === "string" &&
-			record.value.trim().length > 0 &&
-			isAxiRepresentable(record.value));
-	return valueValid && (record.source === undefined || isOperationKind(record.source));
+		(typeof record.value === "string" && isAxiRepresentable(record.value));
+	return (
+		typeof record.label === "string" &&
+		record.label.length > 0 &&
+		(record.kind === "contains" || record.kind === "not_found") &&
+		valueValid &&
+		(record.source === undefined || isOperationKind(record.source))
+	);
 }
 
+function validCanonicalAnswer(value: unknown, requiredFacts: unknown[]): boolean {
+	if (!Array.isArray(value) || value.length === 0) return false;
+	const labels = new Set(
+		requiredFacts.map((fact) => (fact as { label?: unknown }).label),
+	);
+	const seenLabels = new Set<string>();
+	const recordsValid = value.every((record) => {
+		if (!record || typeof record !== "object") return false;
+		const fields = (record as { fields?: unknown }).fields;
+		if (!Array.isArray(fields) || fields.length === 0) return false;
+		const recordKeys = new Set<string>();
+		return fields.every((field) => {
+			if (!field || typeof field !== "object") return false;
+			const item = field as { key?: unknown; factLabel?: unknown };
+			if (
+				typeof item.key !== "string" ||
+				!/^[a-z][a-z0-9_]*$/u.test(item.key) ||
+				!isAxiRepresentable(item.key) ||
+				recordKeys.has(item.key) ||
+				typeof item.factLabel !== "string" ||
+				!labels.has(item.factLabel) ||
+				seenLabels.has(item.factLabel)
+			) {
+				return false;
+			}
+			seenLabels.add(item.factLabel);
+			recordKeys.add(item.key);
+			return true;
+		});
+	});
+	return recordsValid && seenLabels.size === labels.size;
+}
 interface RawTaskRecord {
 	minimumToolCalls?: unknown;
 	requiredOperations?: unknown;
 	requiredFacts?: unknown;
+	canonicalAnswer?: unknown;
 }
-
 function invalidTaskRecord(taskValue: unknown): boolean {
 	if (!taskValue || typeof taskValue !== "object") return true;
 	const taskRecord = taskValue as RawTaskRecord;
-	return !Number.isInteger(taskRecord.minimumToolCalls) ||
+	return (
+		!Number.isInteger(taskRecord.minimumToolCalls) ||
 		(taskRecord.minimumToolCalls as number) < 1 ||
 		!Array.isArray(taskRecord.requiredOperations) ||
 		taskRecord.requiredOperations.some(
 			(operation) => !validRequiredOperation(operation),
 		) ||
 		!Array.isArray(taskRecord.requiredFacts) ||
-		taskRecord.requiredFacts.some((fact) => !validRequiredFact(fact));
+		taskRecord.requiredFacts.some((fact) => !validRequiredFact(fact)) ||
+		!validCanonicalAnswer(taskRecord.canonicalAnswer, taskRecord.requiredFacts)
+	);
 }
-
 function validTaskManifest(manifest: Partial<TaskManifest>): boolean {
 	return Boolean(manifest) &&
 		manifest.version === 1 &&

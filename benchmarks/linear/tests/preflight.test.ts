@@ -51,6 +51,45 @@ describe("preflight primitive reachability validation", () => {
 			failures: [],
 		});
 	});
+	it("requires full canonical grading while preserving compact primitive reachability", () => {
+		const base = result({ answerContract: "canonical" });
+		const formatFailure = validatePreflightResults([
+			{
+				...base,
+				deterministicGrade: {
+					...base.deterministicGrade,
+					passed: false,
+					formatPassed: false,
+				},
+			},
+		]);
+		expect(formatFailure.passed).toBe(false);
+		expect(formatFailure.failures).toContain(
+			"result-1: canonical deterministic answer grading failed",
+		);
+		const factFailure = validatePreflightResults([
+			{
+				...base,
+				deterministicGrade: {
+					...base.deterministicGrade,
+					passed: false,
+					factChecks: [{ label: "fact", passed: false, grounded: true }],
+				},
+			},
+		]);
+		expect(factFailure.passed).toBe(false);
+		const compact = validatePreflightResults([
+			result({
+				deterministicGrade: {
+					...base.deterministicGrade,
+					passed: false,
+					formatPassed: false,
+					factChecks: [{ label: "fact", passed: false, grounded: true }],
+				},
+			}),
+		]);
+		expect(compact.passed).toBe(true);
+	});
 
 	it("rejects non-empty tool output that does not ground required facts", () => {
 		const base = result();

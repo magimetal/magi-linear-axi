@@ -65,6 +65,10 @@ function stringValue(value: unknown): string | undefined {
 		: undefined;
 }
 
+function optionalStringValue(value: unknown): string | undefined {
+	return typeof value === "string" ? value.trim() : undefined;
+}
+
 function nodes(value: unknown): Record<string, unknown>[] {
 	const connection = record(value);
 	return Array.isArray(connection.nodes) ? connection.nodes.map(record) : [];
@@ -165,13 +169,13 @@ function projectsFromData(data: Record<string, unknown>): ProjectSnapshot[] {
 			return [];
 		}
 		const url = stringValue(project.url);
-		const statusName = stringValue(record(project.status).name);
+		const statusName = optionalStringValue(record(project.status).name);
 		return [
 			{
 				id,
 				name,
 				...(url ? { url } : {}),
-				...(statusName ? { statusName } : {}),
+				...(statusName !== undefined ? { statusName } : {}),
 			},
 		];
 	});

@@ -127,6 +127,7 @@ describe("Claude stream-json backend", () => {
 	it("extracts final answer, usage, turns, tool calls, and linked tool results", () => {
 		const parsed = parseClaudeStream(stream);
 		expect(parsed.finalAnswer).toBe("Final answer.");
+		expect(parsed.terminalAnswerObserved).toBe(true);
 		expect(parsed.terminalStatus).toBe("success");
 		expect(parsed.toolCalls.map((call) => call.name)).toEqual([
 			"Bash",
@@ -145,6 +146,7 @@ describe("Claude stream-json backend", () => {
 			cacheReadInputTokens: 20,
 			cacheCreationInputTokens: 4,
 			outputTokens: 30,
+			outputTokensCovered: true,
 			reportedCostUsd: 0.0123,
 		});
 		expect(parsed.turns).toBe(2);
@@ -176,6 +178,29 @@ describe("Claude stream-json backend", () => {
 		}));
 		expect(parsed.finalAnswer).toBe(longAnswer);
 		expect(parsed.usage.outputTokens).toBe(9_876);
+		expect(parsed.usage.outputTokensCovered).toBe(true);
+	});
+
+	it("distinguishes missing from reported zero output tokens and observes empty terminal answers", () => {
+		const missing = parseClaudeStream(
+			JSON.stringify({ type: "result", subtype: "success", result: "" }),
+		);
+		expect(missing.finalAnswer).toBe("");
+		expect(missing.terminalAnswerObserved).toBe(true);
+		expect(missing.usage.outputTokens).toBe(0);
+		expect(missing.usage.outputTokensCovered).toBe(false);
+
+		const zero = parseClaudeStream(
+			JSON.stringify({
+				type: "result",
+				subtype: "success",
+				result: "",
+				usage: { output_tokens: 0 },
+			}),
+		);
+		expect(zero.terminalAnswerObserved).toBe(true);
+		expect(zero.usage.outputTokens).toBe(0);
+		expect(zero.usage.outputTokensCovered).toBe(true);
 	});
 
 	it("deduplicates split terminal text blocks and records measured zero preterminal text", () => {

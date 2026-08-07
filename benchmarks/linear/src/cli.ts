@@ -33,8 +33,10 @@ import {
 	runBenchmarkCase,
 } from "./runner.js";
 import {
+	ANSWER_CONTRACTS,
 	CONDITIONS,
 	TASK_CATEGORIES,
+	type AnswerContract,
 	type BenchmarkPaths,
 	type BenchmarkTask,
 	type Condition,
@@ -56,6 +58,7 @@ export interface CliOptions {
 	positionals: string[];
 	confirmReadOnly: boolean;
 	noJudge: boolean;
+	answerContracts?: AnswerContract[];
 	conditions?: Condition[];
 	taskIds?: string[];
 	categories?: TaskCategory[];
@@ -117,6 +120,30 @@ function conditions(value: string): Condition[] {
 		}
 	}
 	return values as Condition[];
+}
+function answerContracts(value: string): AnswerContract[] {
+	const values = splitValues(value);
+	if (values.length === 0) {
+		throw new Error("answer contract filter cannot be empty");
+	}
+	if (values.includes("all")) {
+		if (values.length !== 1) {
+			throw new Error("answer contract 'all' cannot be combined with other values");
+		}
+		return [...ANSWER_CONTRACTS];
+	}
+	if (
+		values.some(
+			(candidate) =>
+				!(ANSWER_CONTRACTS as readonly string[]).includes(candidate),
+		)
+	) {
+		throw new Error("answer contract must be compact, canonical, or all");
+	}
+	if (new Set(values).size !== values.length) {
+		throw new Error("answer contract values must not be duplicated");
+	}
+	return values as AnswerContract[];
 }
 
 function categories(value: string): TaskCategory[] {
@@ -180,6 +207,11 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
 		}
 		if (argument === "--no-judge") {
 			options.noJudge = true;
+			continue;
+		}
+		if (argument === "--answer-contract") {
+			options.answerContracts = answerContracts(valueAfter(rest, index, argument));
+			index += 1;
 			continue;
 		}
 		if (argument === "--condition" || argument === "--conditions") {
@@ -304,6 +336,8 @@ Commands:
   report     Aggregate appended results into report.md and report.csv.
 
 Common options:
+  --answer-contract compact|canonical|all
+                           Select answer encoding (matrix/preflight default to both; run requires one).
   --condition axi|mcp|all   Filter conditions (matrix defaults to both).
   --task <id>               Repeatable task filter.
   --category <name>         Repeatable category filter.
@@ -477,6 +511,8 @@ async function runCommand(
 			`task '${taskId}' does not match the requested category filter`,
 		);
 	}
+	const answerContract = options.answerContracts?.length === 1 ? options.answerContracts[0] : undefined;
+	if (!answerContract) throw new Error("run requires exactly one answer contract (compact or canonical)");
 	const axiBin =
 		condition === "axi"
 			? await resolveAxiBinary(paths.repoRoot, options.axiBin)
@@ -494,12 +530,14 @@ async function runCommand(
 			paths,
 			inputs,
 			task,
+			answerContract,
 			condition,
 			repeatIndex,
 			benchmarkSeed: seed,
 			matrixRunId,
 			cohort: {
 				expectedConditions: [condition],
+				expectedAnswerContracts: [answerContract],
 				expectedTaskIds: [task.id],
 				expectedRepeatCount: options.repeat,
 				judgeEnabled: !options.noJudge,
@@ -540,19 +578,12 @@ async function matrixCommand(
 		throw new Error("matrix filters selected no tasks");
 	}
 	const selectedConditions = options.conditions ?? [...CONDITIONS];
+	const selectedAnswerContracts = options.answerContracts ?? [...ANSWER_CONTRACTS];
 	const seed = options.seed ?? defaultSeed();
-	const schedule = createMatrixSchedule(
-		tasks,
-		selectedConditions,
-		options.repeat,
-		seed,
-	);
+	const schedule = createMatrixSchedule(tasks, selectedConditions, selectedAnswerContracts, options.repeat, seed);
 	const matrixRunId = options.runId ?? randomUUID();
 	const needsAxi = schedule.some((item) => item.condition === "axi");
-	const axiBin = needsAxi
-		? await resolveAxiBinary(paths.repoRoot, options.axiBin)
-		: (options.axiBin ??
-			join(paths.repoRoot, "target", "release", "magi-linear-axi"));
+	const axiBin = needsAxi ? await resolveAxiBinary(paths.repoRoot, options.axiBin) : (options.axiBin ?? join(paths.repoRoot, "target", "release", "magi-linear-axi"));
 	const commit = getHarnessCommit(paths);
 	const fingerprints = await getBenchmarkFingerprints(paths, {
 		...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
@@ -572,12 +603,14 @@ async function matrixCommand(
 			matrixRunId,
 			cohort: {
 				expectedConditions: [...selectedConditions],
+				expectedAnswerContracts: [...selectedAnswerContracts],
 				expectedTaskIds: tasks.map((selectedTask) => selectedTask.id),
 				expectedRepeatCount: options.repeat,
 				judgeEnabled: !options.noJudge,
 				taskManifestHash: inputs.taskManifestHash,
 			},
 			model: options.model,
+			answerContract: item.answerContract,
 			judgeModel: options.judgeModel,
 			useJudge: !options.noJudge,
 			...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
@@ -612,20 +645,16 @@ async function preflightCommand(
 		throw new Error("preflight filters selected no tasks");
 	}
 	const selectedConditions = options.conditions ?? [...CONDITIONS];
+	const selectedAnswerContracts = options.answerContracts ?? [...ANSWER_CONTRACTS];
 	const seed = options.seed ?? defaultSeed();
-	const schedule = createMatrixSchedule(tasks, selectedConditions, 1, seed);
+	const schedule = createMatrixSchedule(tasks, selectedConditions, selectedAnswerContracts, 1, seed);
 	const matrixRunId = options.runId ?? randomUUID();
 	const existingResults = await readResults(paths.resultsFile);
 	if (existingResults.some((result) => result.matrixRunId === matrixRunId)) {
-		throw new Error(
-			"preflight requires a distinct matrixRunId; the selected ID already exists",
-		);
+		throw new Error("preflight requires a distinct matrixRunId; the selected ID already exists");
 	}
 	const needsAxi = schedule.some((item) => item.condition === "axi");
-	const axiBin = needsAxi
-		? await resolveAxiBinary(paths.repoRoot, options.axiBin)
-		: (options.axiBin ??
-			join(paths.repoRoot, "target", "release", "magi-linear-axi"));
+	const axiBin = needsAxi ? await resolveAxiBinary(paths.repoRoot, options.axiBin) : (options.axiBin ?? join(paths.repoRoot, "target", "release", "magi-linear-axi"));
 	const commit = getHarnessCommit(paths);
 	const fingerprints = await getBenchmarkFingerprints(paths, {
 		...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
@@ -648,9 +677,11 @@ async function preflightCommand(
 					expectedRepeatCount: 1,
 					judgeEnabled: false,
 					taskManifestHash: inputs.taskManifestHash,
+					expectedAnswerContracts: [...selectedAnswerContracts],
 				},
 				model: options.model,
 				judgeModel: options.judgeModel,
+				answerContract: item.answerContract,
 				useJudge: false,
 				...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
 				axiBin,
@@ -723,6 +754,7 @@ async function reportCommand(
 		...(options.taskIds ? { taskIds: options.taskIds } : {}),
 		...(options.categories ? { categories: options.categories } : {}),
 		...(options.conditions ? { conditions: options.conditions } : {}),
+		...(options.answerContracts ? { answerContracts: options.answerContracts } : {}),
 	};
 	const selected = filterResults(cohort.results, filters);
 	await writeReports(
@@ -730,6 +762,7 @@ async function reportCommand(
 		paths.reportCsvFile,
 		selected,
 		cohort.matrixRunId,
+		cohort.results,
 	);
 	console.log(
 		JSON.stringify(

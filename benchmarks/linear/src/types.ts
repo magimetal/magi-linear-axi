@@ -1,5 +1,16 @@
 export const CONDITIONS = ["axi", "mcp"] as const;
 export type Condition = (typeof CONDITIONS)[number];
+export const ANSWER_CONTRACTS = ["compact", "canonical"] as const;
+export type AnswerContract = (typeof ANSWER_CONTRACTS)[number];
+
+export interface CanonicalAnswerField {
+	key: string;
+	factLabel: string;
+}
+
+export interface CanonicalAnswerRecord {
+	fields: CanonicalAnswerField[];
+}
 
 export const TASK_CATEGORIES = [
   "single_step",
@@ -114,6 +125,8 @@ export interface BenchmarkTask {
   requiredOperations: RequiredOperation[];
   requiredFacts: RequiredFact[];
   gradingHints: string[];
+	/** Ordered canonical answer records. Each field maps to requiredFacts by label. */
+	canonicalAnswer?: CanonicalAnswerRecord[];
 }
 
 export interface TaskManifest {
@@ -140,6 +153,7 @@ export interface ParsedToolResult {
   isError: boolean;
 }
 
+
 export interface PhaseSize {
   codePoints: number;
   utf8Bytes: number;
@@ -153,8 +167,6 @@ export const PHASE_KEYS = [
   "linkedToolResultText",
 ] as const;
 export type PhaseKey = (typeof PHASE_KEYS)[number];
-
-/** Numeric-only stream measurements. Missing keys are explicitly uncovered. */
 export interface PhaseMetrics {
   assistantToolArguments?: PhaseSize;
   visibleAssistantTextBeforeTerminal?: PhaseSize;
@@ -167,12 +179,12 @@ export interface PhaseMetrics {
 export interface UsageCoverage {
   outputTokens: boolean;
 }
-
 export interface ClaudeUsage {
   inputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   outputTokens: number;
+  outputTokensCovered: boolean;
   reportedCostUsd?: number;
 }
 
@@ -214,11 +226,12 @@ export type TerminalResultStatus = "success" | "non_success" | "missing";
 
 export interface ParsedClaudeStream {
   finalAnswer: string;
+  terminalAnswerObserved: boolean;
+  usageCoverage: UsageCoverage;
+  phaseMetrics: PhaseMetrics;
   toolCalls: ParsedToolCall[];
   toolResults: ParsedToolResult[];
   usage: ClaudeUsage;
-  usageCoverage: UsageCoverage;
-  phaseMetrics: PhaseMetrics;
   turns: number;
   durationMs?: number;
   errors: string[];
@@ -251,10 +264,10 @@ export interface DeterministicGrade {
   passed: boolean;
   score: number;
   reason: string;
+  formatPassed: boolean;
+  formatReason?: string;
   factChecks: FactCheck[];
-  /** Full classified operation trace, including rejected help/other calls. */
   operationTrace?: ObservedOperationKind[];
-  /** Includes exact order/count, operands, and linked result semantics. */
   operationChecksPassed?: boolean;
   toolUseRequired: boolean;
   toolUseObserved: boolean;
@@ -273,6 +286,7 @@ export interface LlmGrade {
 
 export interface CohortMetadata {
   expectedConditions: Condition[];
+	expectedAnswerContracts: AnswerContract[];
   expectedTaskIds: string[];
   expectedRepeatCount: number;
   /** Whether this cohort intends to run the optional judge. */
@@ -285,12 +299,14 @@ export interface BenchmarkResult {
   resultId: string;
   matrixRunId: string;
   condition: Condition;
+	answerContract: AnswerContract;
   taskId: string;
   category: TaskCategory;
   repeatIndex: number;
   model: string;
   judgeModel: string;
   expectedConditions: Condition[];
+	expectedAnswerContracts: AnswerContract[];
   expectedTaskIds: string[];
   expectedRepeatCount: number;
   judgeEnabled: boolean;
@@ -313,15 +329,17 @@ export interface BenchmarkResult {
   harnessSourceHash?: string;
   /** SHA-256 of the resolved AXI executable when the cohort includes AXI. */
   axiBinaryHash?: string;
+  phaseMetrics: PhaseMetrics;
   /** Bounded output of the exact Claude executable's --version command. */
   claudeVersion?: string;
   inputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
-	outputTokens: number;
-	outputTokensCovered: boolean;
-	reportedCostUsd?: number;
-	phaseMetrics: PhaseMetrics;
+  outputTokens: number;
+  outputTokensCovered: boolean;
+  terminalAnswerCharacters?: number;
+  terminalAnswerBytes?: number;
+  reportedCostUsd?: number;
   turns: number;
   toolCalls: number;
   bashToolCalls: number;
@@ -363,6 +381,7 @@ export interface ResultFilters {
   taskIds?: string[];
   categories?: TaskCategory[];
   conditions?: Condition[];
+	answerContracts?: AnswerContract[];
   matrixRunId?: string;
   matrixRunIds?: string[];
 }

@@ -110,6 +110,7 @@ function addUsage(
 	if (outputTokens !== undefined) {
 		target.outputTokens += outputTokens;
 		coverage.outputTokens = true;
+		target.outputTokensCovered = true;
 	}
 }
 
@@ -128,6 +129,7 @@ function setFinalUsage(
 	if (cacheCreation !== undefined) target.cacheCreationInputTokens = cacheCreation;
 	if (outputTokens !== undefined) {
 		target.outputTokens = outputTokens;
+		target.outputTokensCovered = true;
 		coverage.outputTokens = true;
 	}
 }
@@ -257,6 +259,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		cacheReadInputTokens: 0,
 		cacheCreationInputTokens: 0,
 		outputTokens: 0,
+		outputTokensCovered: false,
 	};
 	const usageCoverage = { outputTokens: false };
 	const toolCalls: ParsedToolCall[] = [];
@@ -560,6 +563,7 @@ export function parseClaudeStream(raw: string): ParsedClaudeStream {
 		errors,
 		parseErrors,
 		terminalStatus,
+		terminalAnswerObserved: resultText !== undefined,
 	};
 }
 

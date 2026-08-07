@@ -8,10 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ### Added
 
-- Add content-free stream phase-size instrumentation using Unicode code points and UTF-8 bytes for assistant tool arguments, visible preterminal text, terminal answers, exposed thinking, and linked tool results. Reports preserve exact provider output-token totals, expose missing coverage as `n/a`, aggregate phases by condition/category, and identify largest fully covered AXI−MCP generated-phase delta.
+- Add interface-neutral compact-versus-canonical benchmark cells. Canonical answers use exact minified JSON with ordered task schemas, string values, literal Unicode, normal JSON escaping, ordered arrays for multiple records, and explicit issue-scoped not-found errors.
+- Add contract-aware scheduling, preflight/grading, strict cohort validation, provider output-token coverage, terminal Unicode-character/UTF-8-byte metrics, and `adopt`/`retain`/`not_evaluable` reporting against the 15% adoption gate.
+- Add content-free stream phase-size instrumentation using Unicode code points and UTF-8 bytes for assistant tool arguments, visible preterminal text, terminal answers, exposed thinking, and linked tool results. Reports preserve provider output-token totals, expose missing coverage as `n/a`, and aggregate phases by condition, answer contract, and task category.
+
 ### Fixed
 
-- Align the AXI benchmark condition with v0.2.0 compact projections: guidance uses the compact issue/query/comment/relation/project forms, the broker rejects legacy or malformed selectors, and safety/operation grading recognizes only the bounded compact reads.
+- Align AXI benchmark guidance, broker validation, safety checks, and operation grading with v0.2.0 compact projections: `--fields compact` for bounded reads and `--limit=10` for comment/relation lists.
 
 ## [0.2.0] - 2026-08-06
 

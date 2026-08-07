@@ -47,7 +47,9 @@ export LINEAR_BENCHMARK_READ_ONLY=1
 npm run snapshot -- --confirm-read-only
 ```
 
-All generated tasks across `single_step`, `multi_step`, `investigation`, and `error_recovery` share one condition-neutral compact final-answer contract. The invalid-issue task additionally requires explicit issue-scoped not-found wording. Reports include deterministic/judge agreement, counting only passed/failed judge results, alongside pass, output tokens, turns, and tool calls in Markdown and CSV. Model final answers remain intact through parsing and result persistence; secret redaction remains applied.
+Answer contract is orthogonal to interface condition. `compact` preserves condition-neutral prose/fact guidance. `canonical` returns one minified JSON object or array with task-specific keys in exact order, string values only, normal JSON escaping, no prose/fences/extra fields, and `{"error":"issue ENG-404 not found"}` for invalid lookup. Required facts, provenance, linked operation evidence, minimum tool calls, and safety grading stay unchanged. Reports preserve terminal answer character/byte coverage and provider output-token coverage.
+
+`matrix` and `preflight` default to both contracts and both conditions; `run` requires exactly one `--answer-contract compact|canonical`. The cohort is condition × contract × task × repeat, validated under shared snapshot, manifest, model, seed, judge, and fingerprint metadata. Canonical adoption uses complete AXI compact/canonical pairs for size/reduction gates, while quality, incidents, and judge coverage include every condition row. Missing pairs, judges, or size paths are `not_evaluable`; failed gates retain compact.
 
 Snapshot preparation captures only bounded, useful facts: viewer ID, team IDs/keys/names, issue identifiers/titles/URLs/state, selected readable comment IDs/bodies, issue relation types/identifiers/titles, and project IDs/names/URLs/status. Issue descriptions and project bodies are not captured. A workspace needs at least one readable team and issue. Projects, comments, relations, and a second issue are optional; the generator substitutes an interface-common search→view task or records an explicit warning when they are unavailable. Shared task prompts describe intent only: an exact-title issue search and, where required, a later direct retrieval. Concrete AXI command syntax appears only in the AXI condition guide; MCP guidance names typed read tools. Every issue-facing task uses the public human `issue.identifier` (for example `ENG-10`) rather than an internal UUID; project lookup intentionally keeps the project UUID because the AXI project read accepts it. The invalid-identifier task remains intentionally invalid.
 
@@ -75,6 +77,7 @@ Run one condition/task. The command appends a result and never clears unrelated 
 npm run run -- \
   --confirm-read-only \
   --condition axi \
+  --answer-contract compact \
   --task issue-lookup \
   --no-judge
 ```
@@ -85,6 +88,7 @@ The MCP equivalent is:
 npm run run -- \
   --confirm-read-only \
   --condition mcp \
+  --answer-contract canonical \
   --task issue-lookup \
   --no-judge
 ```
@@ -122,18 +126,19 @@ Phase instrumentation records numeric-only Unicode-code-point and UTF-8-byte siz
 
 Code-point and byte sizes are proxies, not exact token attribution, and phase values are not additive with provider token totals. Provider `outputTokens` remains unchanged and gains independent coverage; missing usage renders `n/a`. When both conditions have full coverage for at least one generated phase, report names largest measurable AXI−MCP code-point delta. Otherwise it explicitly records that provider-only or uncovered accounting prevents attribution. Aggregate reports contain no prompts, answers, tool arguments, tool results, workspace identifiers/values, endpoints, or credentials.
 
-A small seeded pilot across all task categories and both conditions:
+A small seeded judged pilot across all task categories, both conditions, and both contracts:
 
 ```sh
 npm run matrix -- \
   --confirm-read-only \
   --category single_step,multi_step,investigation,error_recovery \
   --repeat 1 \
-  --seed linear-pilot-1 \
-  --no-judge
+  --seed linear-pilot-1
 ```
 
-A fuller repeated matrix (omit `--no-judge` when LLM judging is desired):
+Generate pilot report and require 100% canonical deterministic pass/grounding plus no judge-agreement or incident regression before repeated cohort. `--no-judge` remains available only for local harness development, not adoption evidence.
+
+A fuller repeated judged matrix:
 
 ```sh
 npm run matrix -- \
@@ -142,9 +147,9 @@ npm run matrix -- \
   --seed linear-full-1
 ```
 
-Matrix cases are scheduled as task×repeat blocks, shuffled by the recorded seed, with the condition order randomized inside each block. Both condition cases stay adjacent for pairing, but adjacency reduces and cannot eliminate live model/service drift. Repeating the same seed and filters produces the same schedule. One run or matrix invocation gets one `matrixRunId`; pass `--run-id` to set it explicitly. Results are appended to `results/results.jsonl`; that file stores redacted final answers plus judge rationale/status and is workspace-sensitive, like the raw and snapshot artifacts. Raw redacted Claude stream JSONL is stored in `results/raw/`. Existing results are never removed by `run` or `matrix`; reports remain aggregate-only and are the shareable outputs.
+Matrix cases are scheduled as task×repeat blocks, shuffled by recorded seed, with all condition×answer-contract cells randomized but adjacent inside each block. Four default cells (`axi/compact`, `axi/canonical`, `mcp/compact`, `mcp/canonical`) remain paired; adjacency reduces but cannot eliminate live model/service drift. Repeating same seed and filters produces same schedule. One run or matrix invocation gets one `matrixRunId`; pass `--run-id` to set it explicitly. Results append to `results/results.jsonl`; file stores redacted final answers plus judge rationale/status and remains workspace-sensitive, like raw and snapshot artifacts. Raw redacted Claude stream JSONL lives in `results/raw/`. Existing results are never removed; reports remain aggregate-only shareable outputs.
 
-Before a full matrix, use the guarded primitive reachability preflight. It uses the same read-only contract, fresh snapshot/task inputs, the same AXI broker, selected filters, and one no-judge repeat per task/condition, then prints only the new `matrixRunId` and aggregate incident counts. It fails for hard safety, true infrastructure failure, missing condition-appropriate tool use, failed required-operation semantics/results, or facts without grounded linked evidence. It does not require the final prose answer to pass every fact assertion, but it does require the operation contract that makes later grading meaningful:
+Before full matrix, use guarded preflight. It uses same read-only contract, fresh snapshot/task inputs, AXI broker, selected filters, and one no-judge repeat per task/condition/contract, then prints only new `matrixRunId` and aggregate incident counts. Both contracts fail for hard safety, true infrastructure failure, missing condition-appropriate tool use, failed operation semantics/results, or facts without grounded linked evidence. Canonical cells must also pass exact format and every deterministic fact assertion; compact cells intentionally retain primitive-reachability semantics.
 
 ```sh
 npm run preflight -- \
@@ -153,17 +158,18 @@ npm run preflight -- \
   --seed linear-preflight-1
 ```
 
-Generate aggregate Markdown and CSV reports at any time, without network access. By default, a report selects the latest `matrixRunId` instead of mixing append-only runs; use `--run-id <id>` to select a cohort explicitly:
+Generate aggregate Markdown and CSV reports at any time, without network access. By default, a report selects latest `matrixRunId`; use `--run-id <id>` to select a cohort explicitly:
 
 ```sh
 npm run report
 # Optional filters:
 npm run report -- --condition axi --category investigation
+npm run report -- --answer-contract canonical
 ```
 
-A report first selects the complete latest cohort, or the complete cohort named by `--run-id`, and validates it before applying `--task`, `--category`, or `--condition` display filters. Validation requires one matrix run ID, invariant model/seed/snapshot/task-manifest/judge/harness source/Claude fingerprint metadata, an AXI binary hash whenever AXI is in the cohort, matching expected conditions and task IDs, the expected repeat count and judge-enabled intent, exactly one result per condition/task/repeat cell, and every expected cell. Reusing an ID for a mixed or interrupted run therefore fails clearly instead of producing a partial report. A single-condition `run` is valid because its expected condition set contains only that condition. `writeReports` accepts the already selected cohort/filter result and never silently selects another cohort. Cohorts produced before these fingerprints and separate safety/error fields are conceptually invalid and should not be compared.
+Report selection validates complete cohort before applying `--task`, `--category`, `--condition`, or `--answer-contract` display filters. Validation requires one matrix run ID, invariant model/seed/snapshot/task-manifest/judge/harness source/Claude fingerprint metadata, AXI binary hash whenever AXI is present, matching expected conditions/contracts/task IDs, expected repeat count and judge intent, and exactly one result per condition/contract/task/repeat cell. Reusing an ID for mixed or interrupted run fails clearly. Single-condition, single-contract `run` remains valid because expected sets contain only selected values. Adoption uses complete validated cohort before display filtering; `writeReports` never silently switches cohorts.
 
-The report includes per-condition and per-task/condition per-run means for input/output tokens, provider-reported cost, **agent wall time**, turns, and tool calls, plus p50/p95 duration and tool calls, pass rate, separate incident/run-rate columns, aggregate component timing, and phase-size totals/covered-run means/coverage by condition and condition/task category. Retry totals/means/coverage remain separate from timing. Primary `wallTimeMs` retains the boundary defined above. Optional `judgeWallTimeMs` and `orchestrationWallTimeMs` remain diagnostic. Incident totals and affected-run counts are separate, and run rates are capped at 100%. Policy incidents do not override correctness; hard safety and true infrastructure failures do. Ordinary command/API/tool errors affect facts and evidence but are not automatically infrastructure. Missing provider cost, output-token usage, component coverage, and phase coverage remain `n/a`, never zero-filled. Results record cohort/fingerprint metadata required for validation. Fingerprint helpers receive only bounded non-secret environment values. Reports include aggregate metrics only; they do not include snapshot contents, prompts, final answers, comment bodies, raw tool arguments/results, workspace identifiers/values, endpoints, or credentials.
+Report rows group by condition+contract, task+condition+contract, and phase condition+category+contract. They include per-run means for input tokens, provider output tokens only across covered rows, exact terminal answer Unicode characters and UTF-8 bytes only across observed terminal results, provider cost, **agent wall time**, turns, and tool calls; p50/p95 duration/tool calls; pass, grounding/judge agreement; incidents; component timings; and phase-size totals/covered means/coverage. Phase values remain code-point/byte proxies, distinct from exact terminal-answer sizes and provider token totals. Missing output-token, answer-size, cost, timing, or phase measurements stay `n/a`/uncovered, never synthetic zero. Markdown and CSV include adoption status, reasons, reductions, and coverage without prompts, answers, tool-result text, workspace facts, endpoints, or credentials.
 
 ## Backend details
 

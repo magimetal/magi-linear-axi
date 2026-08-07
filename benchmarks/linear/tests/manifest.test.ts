@@ -111,6 +111,44 @@ describe("task manifest integrity", () => {
 		expect(() => parseTaskManifest(operationManifest)).toThrow(/invalid or incomplete/u);
 	});
 
+	it("accepts an explicit empty canonical string fact", () => {
+		const manifest = generateTasks(richSnapshot());
+		const target = manifest.tasks[0]!;
+		target.requiredFacts.push({
+			label: "optional empty field",
+			kind: "contains",
+			value: "",
+		});
+		target.canonicalAnswer![0]!.fields.push({
+			key: "optional_empty_field",
+			factLabel: "optional empty field",
+		});
+		expect(() => parseTaskManifest(manifest)).not.toThrow();
+	});
+
+	it("rejects missing or malformed canonical answer schemas", () => {
+		const missing = generateTasks(richSnapshot());
+		delete missing.tasks[0]!.canonicalAnswer;
+		expect(() => parseTaskManifest(missing)).toThrow(/invalid or incomplete/u);
+
+		const emptyKey = generateTasks(richSnapshot());
+		emptyKey.tasks[0]!.canonicalAnswer![0]!.fields[0]!.key = "";
+		expect(() => parseTaskManifest(emptyKey)).toThrow(/invalid or incomplete/u);
+
+		const duplicateKey = generateTasks(richSnapshot());
+		const fields = duplicateKey.tasks[0]!.canonicalAnswer![0]!.fields;
+		fields[1]!.key = fields[0]!.key;
+		expect(() => parseTaskManifest(duplicateKey)).toThrow(/invalid or incomplete/u);
+
+		const unknownFact = generateTasks(richSnapshot());
+		unknownFact.tasks[0]!.canonicalAnswer![0]!.fields[0]!.factLabel = "unknown";
+		expect(() => parseTaskManifest(unknownFact)).toThrow(/invalid or incomplete/u);
+
+		const missingFact = generateTasks(richSnapshot());
+		missingFact.tasks[0]!.canonicalAnswer![0]!.fields.pop();
+		expect(() => parseTaskManifest(missingFact)).toThrow(/invalid or incomplete/u);
+	});
+
 	it("rejects an altered snapshot hash even when task definitions are unchanged", async () => {
 		const directory = await mkdtemp(join(process.cwd(), "linear-manifest-hash-"));
 		temporaryDirectories.push(directory);
