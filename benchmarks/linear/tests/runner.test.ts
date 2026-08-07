@@ -69,7 +69,7 @@ const task: BenchmarkTask = {
 function parsedStream(binary = "/tmp/bin/magi-linear-axi"): ParsedClaudeStream {
   return {
     finalAnswer: "ENG-1",
-    toolCalls: [{ id: "axi-1", name: "Bash", kind: "bash", input: { command: `${binary} issue view ENG-1` } }],
+    toolCalls: [{ id: "axi-1", name: "Bash", kind: "bash", input: { command: `${binary} issue view ENG-1 --fields compact` } }],
     toolResults: [{ toolUseId: "axi-1", text: "ENG-1", isError: false }],
     usage: { inputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 1 },
     usageCoverage: { outputTokens: true },
@@ -97,11 +97,11 @@ describe("benchmark case isolation and cohorts", () => {
     const axiPrompt = buildTaskPrompt(task, "axi", binary);
     expect(axiPrompt.split(binary)).toHaveLength(2);
     for (const read of [
-      "issue view <IDENTIFIER>",
-      "issue query --search=<TEXT>",
-      "issue comment list <IDENTIFIER>",
-      "issue relation list <IDENTIFIER>",
-      "project view <PROJECT_ID>",
+      "issue view <IDENTIFIER> --fields compact",
+      "issue query --search=<TEXT> --fields compact",
+      "issue comment list <IDENTIFIER> --fields compact --limit=10",
+      "issue relation list <IDENTIFIER> --fields compact --limit=10",
+      "project view <PROJECT_ID> --fields compact",
     ]) {
       expect(axiPrompt).toContain(read);
     }
@@ -117,7 +117,7 @@ describe("benchmark case isolation and cohorts", () => {
     expect(axiPrompt).not.toContain(`${binary} issue create`);
     // Benchmark metadata: fixture chars and heuristic chars/4 token estimate.
     expect({ characters: axiPrompt.length, estimatedTokens: Math.ceil(axiPrompt.length / 4) })
-      .toEqual({ characters: 1_173, estimatedTokens: 294 });
+      .toEqual({ characters: 1_288, estimatedTokens: 322 });
     expect(axiPrompt.length).toBeLessThan(1_383);
     const mcpPrompt = buildTaskPrompt(task, "mcp", binary);
     expect(mcpPrompt).toBe([
@@ -433,7 +433,7 @@ printf '%s\\n' 'helper stderr must stay suppressed: unrelated-secret' >&2
         execute: async (options) => {
           workspace = options.cwd;
           const wrapper = options.axiBin ?? "";
-          const invocation = await runProgram(wrapper, ["--format", "json", "issue", "view", "ENG-1"]);
+          const invocation = await runProgram(wrapper, ["--format", "json", "issue", "view", "ENG-1", "--fields", "compact"]);
           expect(invocation.code).toBe(0);
           expect(invocation.stderr).toContain("retrying Linear request");
           const timingText = await readFile(join(options.cwd, "timing.jsonl"), "utf8");

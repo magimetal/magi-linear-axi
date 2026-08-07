@@ -4,14 +4,17 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LINEAR_GRAPHQL_ENDPOINT } from "./graphql.js";
+import {
+	AXI_MAX_ARG_BYTES,
+	AXI_MAX_ARG_COUNT,
+	parseAxiArgv,
+} from "./axi-argv.js";
 import { redactSecrets } from "./safety.js";
 
 /** The broker is intentionally Unix-only; benchmark cases run on local Unix hosts. */
 const MAX_REQUEST_BYTES = 16 * 1024;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
-const MAX_ARG_COUNT = 64;
-const MAX_ARG_BYTES = 4096;
 const BROKER_TIMEOUT_MS = 2 * 60 * 1000;
 
 const SAFE_CHILD_ENVIRONMENT_KEYS = [
@@ -36,80 +39,6 @@ const SAFE_CHILD_ENVIRONMENT_KEYS = [
 	"REQUESTS_CA_BUNDLE",
 	"NODE_EXTRA_CA_CERTS",
 ] as const;
-
-const HELP_FAMILIES = new Map<string, Set<string>>([
-	["issue", new Set(["comment", "relation", "agent-session"])],
-	["team", new Set()],
-	["user", new Set()],
-	["project", new Set()],
-	["project-update", new Set()],
-	["pu", new Set()],
-	["cycle", new Set()],
-	["cy", new Set()],
-	["milestone", new Set()],
-	["m", new Set()],
-	["initiative", new Set()],
-	["init", new Set()],
-	["initiative-update", new Set()],
-	["iu", new Set()],
-	["label", new Set()],
-	["l", new Set()],
-	["document", new Set()],
-	["docs", new Set()],
-	["doc", new Set()],
-	["auth", new Set()],
-	["config", new Set()],
-	["setup", new Set()],
-	["schema", new Set()],
-	["api", new Set()],
-]);
-
-const HELP_NESTED_OPERATIONS = new Map<string, Set<string>>([
-	[
-		"issue",
-		new Set([
-			"mine",
-			"list",
-			"query",
-			"view",
-			"v",
-			"title",
-			"describe",
-			"url",
-			"id",
-			"commits",
-			"pull-request",
-			"comment",
-			"relation",
-			"agent-session",
-		]),
-	],
-	["team", new Set(["list", "create", "delete", "members", "states", "autolinks"])],
-	["user", new Set(["list"])],
-	["project", new Set(["list", "view", "v", "create", "update", "delete"])],
-	["project-update", new Set(["list", "l", "create", "c"])],
-	["pu", new Set(["list", "l", "create", "c"])],
-	["cycle", new Set(["list", "view", "v"])],
-	["cy", new Set(["list", "view", "v"])],
-	["milestone", new Set(["list", "view", "v", "create", "update", "delete"])],
-	["m", new Set(["list", "view", "v", "create", "update", "delete"])],
-	[
-		"initiative",
-		new Set(["list", "ls", "view", "v", "create", "update", "archive", "unarchive", "delete", "add-project", "remove-project"]),
-	],
-	[
-		"init",
-		new Set(["list", "ls", "view", "v", "create", "update", "archive", "unarchive", "delete", "add-project", "remove-project"]),
-	],
-	["initiative-update", new Set(["list", "l", "create", "c"])],
-	["iu", new Set(["list", "l", "create", "c"])],
-	["label", new Set(["list", "create", "delete"])],
-	["l", new Set(["list", "create", "delete"])],
-	["document", new Set(["list", "l", "view", "v", "create", "update", "delete"])],
-	["docs", new Set(["list", "l", "view", "v", "create", "update", "delete"])],
-	["doc", new Set(["list", "l", "view", "v", "create", "update", "delete"])],
-	["auth", new Set(["whoami", "login", "list", "default", "token", "logout"])],
-]);
 
 export class AxiBrokerValidationError extends Error {
 	constructor(message: string) {
@@ -155,12 +84,6 @@ interface BrokerResponse {
 	signal?: string;
 }
 
-interface NormalizedArgs {
-	core: string[];
-	help: boolean;
-	version: boolean;
-}
-
 function boundedUtf8(value: string, maxBytes: number): string {
 	const buffer = Buffer.from(value, "utf8");
 	if (buffer.byteLength <= maxBytes) {
@@ -173,23 +96,8 @@ function reject(message: string): never {
 	throw new AxiBrokerValidationError(message);
 }
 
-function validValue(
-	value: string | undefined,
-	label: string,
-	maxLength = MAX_ARG_BYTES,
-	allowLeadingDash = false,
-): string {
-	if (!value || (!allowLeadingDash && value.startsWith("-"))) {
-		reject(`malformed AXI request: ${label} requires a value`);
-	}
-	if (value.includes("\u0000") || Buffer.byteLength(value, "utf8") > maxLength) {
-		reject(`malformed AXI request: ${label} is invalid or oversized`);
-	}
-	return value;
-}
-
 function validateArgShape(argv: readonly string[]): void {
-	if (argv.length === 0 || argv.length > MAX_ARG_COUNT) {
+	if (argv.length === 0 || argv.length > AXI_MAX_ARG_COUNT) {
 		reject("malformed AXI request: invalid argument count");
 	}
 	for (const argument of argv) {
@@ -197,230 +105,31 @@ function validateArgShape(argv: readonly string[]): void {
 			typeof argument !== "string" ||
 			argument.length === 0 ||
 			argument.includes("\u0000") ||
-			Buffer.byteLength(argument, "utf8") > MAX_ARG_BYTES
+			Buffer.byteLength(argument, "utf8") > AXI_MAX_ARG_BYTES
 		) {
 			reject("malformed AXI request: invalid or oversized argument");
 		}
 	}
 }
 
-function stripSafeGlobalFlags(argv: readonly string[]): NormalizedArgs {
-	const core: string[] = [];
-	let help = false;
-	let version = false;
-	for (let index = 0; index < argv.length; index += 1) {
-		const argument = argv[index];
-		if (argument === "--") {
-			reject("AXI request cannot use a positional argument separator");
-		}
-		if (argument === "--help" || argument === "-h") {
-			if (help) {
-				reject("malformed AXI request: duplicate help flag");
-			}
-			help = true;
-			continue;
-		}
-		if (argument === "--version" || argument === "-V") {
-			if (version) {
-				reject("malformed AXI request: duplicate version flag");
-			}
-			version = true;
-			continue;
-		}
-		if (argument === "--full" || argument === "--color") {
-			if (argument === "--color") {
-				reject("AXI request uses an unsupported global flag");
-			}
-			continue;
-		}
-		if (argument === "--format" || argument === "--workspace") {
-			const value = validValue(argv[index + 1], argument);
-			if (argument === "--format" && value !== "toon" && value !== "json") {
-				reject("malformed AXI request: --format must be toon or json");
-			}
-			index += 1;
-			continue;
-		}
-		if (argument.startsWith("--format=") || argument.startsWith("--workspace=")) {
-			const [flag, ...parts] = argument.split("=");
-			const value = parts.join("=");
-			validValue(value, flag ?? "global flag");
-			if (flag === "--format" && value !== "toon" && value !== "json") {
-				reject("malformed AXI request: --format must be toon or json");
-			}
-			continue;
-		}
-		if (argument.startsWith("--endpoint") || argument === "-e") {
-			reject("AXI request cannot override the pinned endpoint");
-		}
-		if (argument.startsWith("-") && argument !== "-") {
-			core.push(argument);
-			continue;
-		}
-		core.push(argument);
-	}
-	return { core, help, version };
-}
-
-function validateHelp(core: readonly string[], help: boolean, version: boolean): void {
-	if (version) {
-		if (help || core.length > 0) {
-			reject("malformed AXI request: version must be a root operation");
-		}
-		return;
-	}
-	if (!help) {
-		return;
-	}
-	if (core.length === 0) {
-		return;
-	}
-	if (core.length > 3) {
-		reject("unknown AXI help operation");
-	}
-	const family = core[0];
-	if (!family || !HELP_FAMILIES.has(family)) {
-		reject("unknown AXI help family");
-	}
-	if (core.length === 2) {
-		const operation = core[1];
-		if (!operation || !HELP_NESTED_OPERATIONS.get(family)?.has(operation)) {
-			reject("unknown AXI help operation");
-		}
-	}
-	if (core.length === 3) {
-		const nested = core[1];
-		const operation = core[2];
-		let allowed = new Set<string>();
-		if (nested === "comment") {
-			allowed = new Set(["list", "add", "update", "delete"]);
-		} else if (nested === "relation") {
-			allowed = new Set(["list", "add", "delete"]);
-		} else if (nested === "agent-session") {
-			allowed = new Set(["list", "view"]);
-		}
-		if (!operation || !allowed.has(operation)) {
-			reject("unknown AXI help operation");
-		}
-	}
-}
-
-function exactRead(core: readonly string[], expected: readonly string[]): boolean {
-	if (core.length !== expected.length || core.some((value, index) => value !== expected[index])) {
-		return false;
-	}
-	return true;
-}
-
-function positional(core: readonly string[], index: number, label: string): void {
-	validValue(core[index], label);
-}
-
-function validateIssueQuery(core: readonly string[]): void {
-	if (core.length < 3 || core[0] !== "issue" || core[1] !== "query") {
-		reject("unknown or malformed AXI read operation");
-	}
-	let search: string | undefined;
-	for (let index = 2; index < core.length; index += 1) {
-		const argument = core[index];
-		if (argument === "--search") {
-			reject(
-				"malformed AXI request: issue query requires unambiguous --search=<TEXT>",
-			);
-		}
-		if (argument?.startsWith("--search=")) {
-			if (search !== undefined) {
-				reject("malformed AXI request: duplicate --search");
-			}
-			search = validValue(
-				argument.slice("--search=".length),
-				"--search",
-				MAX_ARG_BYTES,
-				true,
-			);
-			continue;
-		}
-		if (argument === "--limit") {
-			const value = validValue(core[index + 1], "--limit", 32);
-			if (!/^\d{1,3}$/u.test(value) || Number(value) < 1 || Number(value) > 100) {
-				reject("malformed AXI request: --limit is outside the read bound");
-			}
-			index += 1;
-			continue;
-		}
-		if (argument?.startsWith("--limit=")) {
-			const value = validValue(argument.slice("--limit=".length), "--limit", 32);
-			if (!/^\d{1,3}$/u.test(value) || Number(value) < 1 || Number(value) > 100) {
-				reject("malformed AXI request: --limit is outside the read bound");
-			}
-			continue;
-		}
-		reject("unknown or malformed AXI read operation");
-	}
-	if (search === undefined) {
-		reject("malformed AXI request: issue query requires --search");
-	}
-}
-
 /** Validates the complete argv accepted by the credential broker. */
 export function validateAxiBrokerArgv(argv: readonly string[]): void {
 	validateArgShape(argv);
-	if (argv.some((argument) => argument === "--endpoint" || argument.startsWith("--endpoint="))) {
-		reject("AXI request cannot override the pinned endpoint");
-	}
-	const normalized = stripSafeGlobalFlags(argv);
-	validateHelp(normalized.core, normalized.help, normalized.version);
-	if (normalized.help || normalized.version) {
-		return;
-	}
-	const core = normalized.core;
-	if (core[0] === "issue" && core[1] === "query") {
-		validateIssueQuery(core);
-		return;
-	}
-	if (core.some((argument) => argument.startsWith("-"))) {
-		reject("unknown or malformed AXI flag");
-	}
-	if (exactRead(core, ["auth", "whoami"])) {
-		return;
-	}
-	if (core[0] === "api") {
-		reject("raw AXI API requests are not permitted by the benchmark broker");
-	}
-	if (core[0] === "schema") {
-		reject("AXI schema output is not permitted by the benchmark broker");
-	}
-	if (core[0] === "auth") {
-		reject("only AXI auth whoami is permitted by the benchmark broker");
-	}
-	if (exactRead(core.slice(0, 2), ["issue", "view"])) {
-		if (core.length !== 3) {
-			reject("malformed AXI request: issue view requires one identifier");
+	const parsed = parseAxiArgv(argv);
+	if (!parsed.ok) {
+		if (parsed.core[0] === "api") {
+			reject("raw AXI API requests are not permitted by the benchmark broker");
 		}
-		positional(core, 2, "issue identifier");
-		return;
-	}
-	if (exactRead(core.slice(0, 3), ["issue", "comment", "list"])) {
-		if (core.length !== 4) {
-			reject("malformed AXI request: issue comment list requires one identifier");
+		if (parsed.core[0] === "schema") {
+			reject("AXI schema output is not permitted by the benchmark broker");
 		}
-		positional(core, 3, "issue identifier");
-		return;
-	}
-	if (exactRead(core.slice(0, 3), ["issue", "relation", "list"])) {
-		if (core.length !== 4) {
-			reject("malformed AXI request: issue relation list requires one identifier");
+		if (parsed.core[0] === "auth") {
+			reject("only AXI auth whoami is permitted by the benchmark broker");
 		}
-		positional(core, 3, "issue identifier");
-		return;
+		reject(parsed.reason);
 	}
-	if (exactRead(core.slice(0, 2), ["project", "view"])) {
-		if (core.length !== 3) {
-			reject("malformed AXI request: project view requires one identifier");
-		}
-		positional(core, 2, "project identifier");
-		return;
-	}
+	if (parsed.help || parsed.version) return;
+	if (parsed.operation !== undefined) return;
 	reject("unknown or disallowed AXI operation");
 }
 

@@ -9,6 +9,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 ### Added
 
 - Add content-free stream phase-size instrumentation using Unicode code points and UTF-8 bytes for assistant tool arguments, visible preterminal text, terminal answers, exposed thinking, and linked tool results. Reports preserve exact provider output-token totals, expose missing coverage as `n/a`, aggregate phases by condition/category, and identify largest fully covered AXI−MCP generated-phase delta.
+### Fixed
+
+- Align the AXI benchmark condition with v0.2.0 compact projections: guidance uses the compact issue/query/comment/relation/project forms, the broker rejects legacy or malformed selectors, and safety/operation grading recognizes only the bounded compact reads.
 
 ## [0.2.0] - 2026-08-06
 
