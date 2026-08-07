@@ -114,7 +114,12 @@ pub enum AuthCommand {
 }
 #[derive(Debug, Subcommand)]
 pub enum IssueCommand {
-    Id(IssueRefArgs),
+    #[command(
+        about = "Resolve human issue identifier to internal Linear UUID; uses Git branch fallback"
+    )]
+    Id(IssueIdArgs),
+    #[command(about = "Normalize human issue identifier locally; no network access")]
+    Identifier(IssueIdentifierArgs),
     Mine(IssueQueryArgs),
     List(IssueQueryArgs),
     Query(IssueQueryArgs),
@@ -173,6 +178,24 @@ pub struct IssueQueryArgs {
         help = "Select compact issue-list fields"
     )]
     pub fields: Option<FieldPreset>,
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct IssueIdArgs {
+    #[arg(
+        value_name = "IDENTIFIER",
+        help = "Human issue identifier (for example ENG-123); output is internal Linear UUID; omitted input derives from current Git branch"
+    )]
+    pub identifier: Option<String>,
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub struct IssueIdentifierArgs {
+    #[arg(
+        value_name = "IDENTIFIER",
+        help = "Human issue identifier; omitted input derives from current Git branch"
+    )]
+    pub identifier: Option<String>,
 }
 #[derive(Debug, Args, Clone, Default)]
 pub struct IssueRefArgs {

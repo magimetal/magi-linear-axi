@@ -12,6 +12,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ### Fixed
 
+- Fix `issue id` to resolve human identifiers into internal Linear UUIDs with branch fallback and structured TOON/JSON output; add no-network `issue identifier` compatibility command.
 - Strengthen canonical benchmark preflight with one-record provider JSON Schema enforcement, prompt-only array enforcement for provider compatibility, exact-value preservation and escaped serialized-evidence grounding, MCP search argument guidance, and relation parity that excludes provider-specific relation-type spellings from the oracle.
 - Align the shipped agent skill with compact-first reads, bounded pagination checks, robust search arguments, and concise caller-directed answer formatting.
 - Document v0.2.1 issue create/update field support, raw GraphQL verification, ID discovery, and parent/label follow-up reads; add regression coverage for mutation variables and documentation safety markers.

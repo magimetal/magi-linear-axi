@@ -36,23 +36,23 @@ Workspace precedence: `--workspace` > non-empty `LINEAR_WORKSPACE`; workspace re
 
 ## Issues
 
-Issue argument accepts public identifier such as `ENG-123`. `issue id ENG-123` returns that human identifier, not Linear's internal UUID. While #21 remains open, resolve internal issue UUIDs through raw GraphQL. Issue create/update support is intentionally narrower than every advertised flag:
+Issue references are human identifiers such as `ENG-123`, not internal Linear UUIDs. When omitted, commands try an identifier from current Git branch. `issue id` resolves one identifier with one read-only query and returns internal UUID plus identifier. `issue identifier` preserves local normalized plain output and needs no network or auth. Issue create/update support is intentionally narrower than every advertised flag:
 
 | Operation | Modeled support | Raw GraphQL required or limitation |
 | --- | --- | --- |
 | Create | `--team`, `--title`, `--description`, `--priority` | `--assignee`, `--state`, `--project`, `--label`, `--parent`, `--start`; accepted flags can be silently omitted |
 | Update | `--title`, `--description`, `--priority`, `--unassign` | `--team`, `--assignee`, `--estimate`, `--state`, `--project`, `--milestone`, `--cycle`, `--clear-cycle`; unsupported-only update is rejected as `update requires at least one field` |
-| Resolve public issue identifier | Existing issue references and `issue id` | — |
-| Resolve internal issue UUID | — | Raw GraphQL until #21 is resolved |
+| Resolve human issue identifier | Existing issue references and `issue identifier` | — |
+| Resolve internal issue UUID | `issue id` | — |
 
-Issue field support above is current in v0.2.1. `success:true` only proves Linear accepted mutation; it does not prove requested fields omitted from mutation response were applied. Advertised-field omissions are tracked in #5; internal UUID resolution is tracked in #21. Do not infer either issue is fixed.
+Issue field support above is current in v0.2.1. `success:true` only proves Linear accepted mutation; it does not prove requested fields omitted from mutation response were applied. Advertised-field omissions are tracked in #5.
 
 ```sh
 # Read-only discovery for team, workflow-state, label, and parent-issue UUIDs
 magi-linear-axi team list --all --format json
 magi-linear-axi team states <team-uuid> --format json
 magi-linear-axi label list --team <team-uuid> --all --format json
-magi-linear-axi api 'query($id:String!){issue(id:$id){id identifier}}' --variable id=ENG-123 --format json
+magi-linear-axi issue id ENG-123 --format json
 ```
 
 ```sh
@@ -71,8 +71,6 @@ For sibling batches:
 3. Only then create remaining siblings.
 4. Query parent `children`, count expected children, and verify dependency relations with `issue relation list`.
 
-When issue argument is omitted, commands try public identifier from current Git branch.
-
 ```sh
 # Discover and inspect with compact projections
 magi-linear-axi issue list --team ENG --limit 25 --fields compact
@@ -83,6 +81,11 @@ magi-linear-axi issue title ENG-123
 magi-linear-axi issue describe ENG-123
 magi-linear-axi issue url ENG-123
 magi-linear-axi issue id ENG-123
+magi-linear-axi issue identifier ENG-123
+
+# Resolve UUID for nested raw GraphQL mutations
+magi-linear-axi --format json issue id ENG-123
+magi-linear-axi api 'mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier}}}' --variable input='{"title":"Child","teamId":"<team-id>","parentId":"<uuid-from-issue-id>"}'
 
 # Create, update, and delete
 magi-linear-axi issue create --team <team-id> --title 'Fix authentication' --description 'Observed behavior and acceptance criteria' --priority 2

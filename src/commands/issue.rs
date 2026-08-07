@@ -9,7 +9,7 @@ fn ctx(cli: &Cli) -> Result<(crate::client::LinearClient, Output), AppError> {
         Output::new(cli.format.clone(), cli.full),
     ))
 }
-fn issue_id(value: Option<&str>) -> Result<String, AppError> {
+fn resolve_issue_identifier(value: Option<&str>) -> Result<String, AppError> {
     if let Some(id) = value {
         if !id.trim().is_empty() {
             return Ok(id.to_uppercase());
@@ -32,8 +32,20 @@ fn issue_id(value: Option<&str>) -> Result<String, AppError> {
         }
     }
     Err(AppError::usage(
-        "issue ID required (for example ENG-123), or run on issue branch",
+        "issue identifier required (for example ENG-123), or run on issue branch",
     ))
+}
+fn resolve_issue_id(cli: &Cli, identifier: Option<&str>) -> Result<(), AppError> {
+    let identifier = resolve_issue_identifier(identifier)?;
+    let (client, output) = ctx(cli)?;
+    let value = client.query(
+        "query IssueId($identifier:String!){issue(id:$identifier){id identifier}}",
+        json!({"identifier": identifier}),
+    )?;
+    if value.get("issue").is_none_or(Value::is_null) {
+        return Err(AppError::api(format!("issue {identifier} not found")));
+    }
+    output.render(&value)
 }
 fn run(cli: &Cli, query: &str, vars: Value) -> Result<(), AppError> {
     let (c, o) = ctx(cli)?;
@@ -51,15 +63,20 @@ fn one(cli: &Cli, id: &str, field: &str) -> Result<(), AppError> {
 }
 pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
     match command {
-        IssueCommand::Id(a) => {
-            println!("{}", issue_id(a.issue.as_deref())?);
+        IssueCommand::Id(a) => resolve_issue_id(cli, a.identifier.as_deref()),
+        IssueCommand::Identifier(a) => {
+            println!("{}", resolve_issue_identifier(a.identifier.as_deref())?);
             Ok(())
         }
-        IssueCommand::Title(a) => one(cli, &issue_id(a.issue.as_deref())?, "title"),
-        IssueCommand::Url(a) => one(cli, &issue_id(a.issue.as_deref())?, "url"),
-        IssueCommand::Describe(a) => one(cli, &issue_id(a.issue.as_deref())?, "description"),
+        IssueCommand::Title(a) => one(cli, &resolve_issue_identifier(a.issue.as_deref())?, "title"),
+        IssueCommand::Url(a) => one(cli, &resolve_issue_identifier(a.issue.as_deref())?, "url"),
+        IssueCommand::Describe(a) => one(
+            cli,
+            &resolve_issue_identifier(a.issue.as_deref())?,
+            "description",
+        ),
         IssueCommand::View(a) => {
-            let id = issue_id(a.issue.issue.as_deref())?;
+            let id = resolve_issue_identifier(a.issue.issue.as_deref())?;
             if a.issue.web || a.issue.app {
                 return open_issue_url(cli, &id, a.issue.web);
             }
@@ -77,7 +94,7 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
         IssueCommand::Mine(a) => query(cli, a.query, a.fields, true),
         IssueCommand::List(a) | IssueCommand::Query(a) => query(cli, a.query, a.fields, false),
         IssueCommand::Start(a) => {
-            let id = issue_id(a.issue.as_deref())?;
+            let id = resolve_issue_identifier(a.issue.as_deref())?;
             mutate(
                 cli,
                 "mutation StartIssue($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,input:$input){success issue{identifier title url state{name type}}}}",
@@ -85,7 +102,7 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
             )
         }
         IssueCommand::PullRequest(a) => {
-            let id = issue_id(a.issue.as_deref())?;
+            let id = resolve_issue_identifier(a.issue.as_deref())?;
             let status = ProcessCommand::new("gh")
                 .args(["pr", "list", "--head", "HEAD", "--json", "url"])
                 .status()
@@ -96,7 +113,7 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
             one(cli, &id, "url")
         }
         IssueCommand::Commits(a) => {
-            let id = issue_id(a.issue.as_deref())?;
+            let id = resolve_issue_identifier(a.issue.as_deref())?;
             let output = ProcessCommand::new("git")
                 .args(["log", "-n", "50", "--pretty=format:%H%x09%s"])
                 .output()
@@ -111,7 +128,9 @@ pub fn execute(cli: &Cli, command: IssueCommand) -> Result<(), AppError> {
             let _ = id;
             Output::new(cli.format.clone(), cli.full).render(&json!({"commits":commits}))
         }
-        IssueCommand::Delete(a) => delete_issue(cli, &issue_id(a.issue.as_deref())?),
+        IssueCommand::Delete(a) => {
+            delete_issue(cli, &resolve_issue_identifier(a.issue.as_deref())?)
+        }
         IssueCommand::Create(a) => create(cli, a),
         IssueCommand::Update(a) => update(cli, a),
         IssueCommand::Comment { command } => comment(cli, command),
@@ -205,7 +224,7 @@ fn create(cli: &Cli, a: IssueCreateArgs) -> Result<(), AppError> {
     )
 }
 fn update(cli: &Cli, a: IssueUpdateArgs) -> Result<(), AppError> {
-    let id = issue_id(a.issue.as_deref())?;
+    let id = resolve_issue_identifier(a.issue.as_deref())?;
     let mut input = json!({});
     let o = input.as_object_mut().unwrap();
     if let Some(x) = a.title {
@@ -232,7 +251,7 @@ fn update(cli: &Cli, a: IssueUpdateArgs) -> Result<(), AppError> {
 fn comment(cli: &Cli, c: CommentCommand) -> Result<(), AppError> {
     match c {
         CommentCommand::List(a) => {
-            let id = issue_id(a.issue.issue.as_deref())?;
+            let id = resolve_issue_identifier(a.issue.issue.as_deref())?;
             match a.fields {
                 Some(FieldPreset::Compact) => run(
                     cli,
@@ -249,7 +268,7 @@ fn comment(cli: &Cli, c: CommentCommand) -> Result<(), AppError> {
         CommentCommand::Add(a) => mutate(
             cli,
             "mutation CommentCreate($input:CommentCreateInput!){ commentCreate(input:$input){success comment{id body}} }",
-            json!({"input":{"issueId":issue_id(a.issue.as_deref())?,"body":a.body.ok_or_else(||AppError::usage("--body required"))?}}),
+            json!({"input":{"issueId":resolve_issue_identifier(a.issue.as_deref())?,"body":a.body.ok_or_else(||AppError::usage("--body required"))?}}),
         ),
         CommentCommand::Delete(a) => mutate(
             cli,
@@ -281,7 +300,7 @@ fn attach(cli: &Cli, a: AttachArgs) -> Result<(), AppError> {
 fn relation(cli: &Cli, c: RelationCommand) -> Result<(), AppError> {
     match c {
         RelationCommand::List(a) => {
-            let id = issue_id(a.issue.issue.as_deref())?;
+            let id = resolve_issue_identifier(a.issue.issue.as_deref())?;
             match a.fields {
                 Some(FieldPreset::Compact) => run(
                     cli,
@@ -298,7 +317,7 @@ fn relation(cli: &Cli, c: RelationCommand) -> Result<(), AppError> {
         RelationCommand::Add(a) => mutate(
             cli,
             "mutation RelationCreate($input:IssueRelationCreateInput!){issueRelationCreate(input:$input){success issueRelation{id}}}",
-            json!({"input":{"issueId":issue_id(Some(&a.issue))?,"relatedIssueId":issue_id(Some(&a.related_issue))?,"type":a.relation_type}}),
+            json!({"input":{"issueId":resolve_issue_identifier(Some(&a.issue))?,"relatedIssueId":resolve_issue_identifier(Some(&a.related_issue))?,"type":a.relation_type}}),
         ),
         RelationCommand::Delete(a) => mutate(
             cli,
@@ -312,7 +331,7 @@ fn agent_session(cli: &Cli, c: AgentSessionCommand) -> Result<(), AppError> {
         AgentSessionCommand::List(a) | AgentSessionCommand::View(a) => run(
             cli,
             "query AgentSessions($id:String!){issue(id:$id){identifier agentSessions{nodes{id status createdAt}}}}",
-            json!({"id":issue_id(a.issue.as_deref())?}),
+            json!({"id":resolve_issue_identifier(a.issue.as_deref())?}),
         ),
     }
 }

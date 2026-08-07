@@ -51,7 +51,7 @@ export LINEAR_API_KEY='lin_api_...'
 magi-linear-axi auth whoami
 ```
 
-Find team IDs, inspect issues, then create or update one. v0.2.1 modeled issue mutations support only fields listed below; accepted unsupported create flags can be silently omitted, and unsupported-only update fails before network. #21 remains open.
+Find team IDs, inspect issues, then create or update one. v0.2.1 modeled issue mutations support only fields listed below; accepted unsupported create flags can be silently omitted, and unsupported-only update fails before network.
 
 ```sh
 magi-linear-axi team list
@@ -61,7 +61,7 @@ magi-linear-axi issue create --team <team-id> --title 'Fix authentication timeou
 magi-linear-axi issue update ENG-123 --title 'Fix login timeout' --priority 1
 ```
 
-Use raw GraphQL for unsupported issue fields, internal UUID discovery, and verification. `issue id ENG-123` returns human identifier `ENG-123`, not internal UUID.
+Use raw GraphQL for unsupported issue fields and verification. Resolve internal issue UUIDs with `issue id ENG-123`; use `issue identifier ENG-123` for local human-identifier output.
 
 Use raw GraphQL when modeled commands do not cover an operation:
 
@@ -112,7 +112,7 @@ Structured application errors contain stable fields. Operational failures use ex
 {"error":{"type":"usage","code":2,"message":"what input must be corrected"}}
 ```
 
-Current single-document exceptions: `issue id` and `team id` emit plain identifiers; generated shell completions, help, and version emit plain text; `issue pull-request` passes through `gh` JSON before rendering its Linear result. Parser-level failures occur before output-format resolution and are emitted as structured TOON even when `--format json` was supplied. Do not send these exceptional outputs directly to a strict JSON parser.
+Current single-document exceptions: `issue identifier` and `team id` emit plain identifiers; generated shell completions, help, and version emit plain text; `issue pull-request` passes through `gh` JSON before rendering its Linear result. `issue id` resolves a human identifier to structured internal Linear UUID data. Parser-level failures occur before output-format resolution and are emitted as structured TOON even when `--format json` was supplied. Do not send these exceptional outputs directly to a strict JSON parser.
 
 ## Authentication and configuration
 
@@ -156,7 +156,7 @@ Remote endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts 
 
 ### Issues
 
-Issue references use public identifiers such as `ENG-123`. `issue id ENG-123` echoes that public identifier; while #21 remains open, use raw GraphQL to resolve internal issue UUIDs required by `parentId`. Discover every mutation UUID with read-only calls:
+Issue references are human identifiers such as `ENG-123`, not internal Linear UUIDs. When omitted, relevant commands try to extract an identifier from current Git branch. `issue id` performs one read-only lookup and returns both UUID (`id`) and human identifier (`identifier`); `issue identifier` is local-only compatibility output. Discover every mutation UUID with read-only calls:
 
 ```sh
 magi-linear-axi issue list --team ENG --limit 10 --fields compact
@@ -167,7 +167,7 @@ magi-linear-axi issue view ENG-123 --fields compact
 magi-linear-axi team list --all --format json
 magi-linear-axi team states <team-uuid> --format json
 magi-linear-axi label list --team <team-uuid> --all --format json
-magi-linear-axi api 'query($id:String!){issue(id:$id){id identifier}}' --variable id=ENG-123 --format json
+magi-linear-axi issue id ENG-123 --format json
 ```
 
 v0.2.1 modeled mutation matrix:
@@ -176,10 +176,10 @@ v0.2.1 modeled mutation matrix:
 | --- | --- | --- |
 | Create | `--team`, `--title`, `--description`, `--priority` | `--assignee`, `--state`, `--project`, `--label`, `--parent`, `--start`; accepted flags can be omitted |
 | Update | `--title`, `--description`, `--priority`, `--unassign` | `--team`, `--assignee`, `--estimate`, `--state`, `--project`, `--milestone`, `--cycle`, `--clear-cycle`; unsupported-only update is rejected |
-| Resolve public issue identifier | Existing issue references and `issue id` | — |
-| Resolve internal issue UUID | — | Raw GraphQL until #21 is resolved |
+| Resolve human issue identifier | Existing issue references and `issue identifier` | — |
+| Resolve internal issue UUID | `issue id` | — |
 
-Create flags in raw-GraphQL column may be silently omitted by modeled command. Unsupported-only update returns `update requires at least one field`. `success:true` only proves Linear accepted mutation; it does not prove requested fields omitted from mutation response were applied. Advertised-field omissions are tracked in #5; internal UUID resolution is tracked in #21.
+Create flags in raw-GraphQL column may be silently omitted by modeled command. Unsupported-only update returns `update requires at least one field`. `success:true` only proves Linear accepted mutation; it does not prove requested fields omitted from mutation response were applied. Advertised-field omissions are tracked in #5.
 
 Default `issue view` cannot verify `parent` or `labels` because it does not select them; use raw GraphQL for those fields.
 
@@ -195,7 +195,7 @@ magi-linear-axi api 'mutation IssueCreate($input:IssueCreateInput!){issueCreate(
 | Job | Commands |
 | --- | --- |
 | Discover | `issue mine`, `issue list`, `issue query` |
-| Inspect | `issue view`, `title`, `describe`, `url`, `id` |
+| Inspect | `issue view`, `title`, `describe`, `url`, `id`, `identifier` |
 | Mutate | `issue create`, `update`, `start`, `delete` |
 | Comments | `issue comment list \| add \| update \| delete` |
 | Attachments and links | `issue attach`, `issue link` |
@@ -209,7 +209,17 @@ magi-linear-axi issue mine --state 'In Progress'
 magi-linear-axi issue query --team ENG --search 'authentication' --label bug
 magi-linear-axi issue query --assignee <user-id> --project <project-id>
 magi-linear-axi issue view ENG-123
+```
 
+```sh
+# Resolve human identifier to internal UUID for nested raw mutations
+magi-linear-axi --format json issue id ENG-123
+magi-linear-axi api 'mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier}}}' --variable input='{"title":"Child","teamId":"<team-id>","parentId":"<uuid-from-issue-id>"}'
+```
+
+`issue id` accepts human identifier input and emits structured `{ "issue": { "id": "<uuid>", "identifier": "ENG-123" } }`. Omitted input derives from current Git branch. `issue identifier` keeps old local normalized plain-output behavior and never contacts Linear or requires authentication.
+
+```sh
 # Opt-in compact reads
 magi-linear-axi issue query --team ENG --fields compact
 magi-linear-axi issue view ENG-123 --fields compact
