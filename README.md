@@ -7,6 +7,8 @@ Agent-native Rust CLI for direct, non-interactive Linear GraphQL operations. It 
 [![License: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](LICENSE)
 [![Rust 1.87+](https://img.shields.io/badge/rust-1.87%2B-orange.svg)](Cargo.toml)
 
+**Showcase:** [open the self-contained HTML overview](docs/showcase.html) locally—no external assets or network dependencies required.
+
 > **Quick path:** install with Cargo, export `LINEAR_API_KEY`, verify with `auth whoami`, then use modeled resource commands. Default output is compact [TOON](https://toonformat.dev/); use `--format json` when a downstream tool requires JSON.
 
 ## Read-only benchmark harness

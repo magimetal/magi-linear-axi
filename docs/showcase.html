@@ -1,0 +1,1853 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1015">
+  <meta name="description" content="magi-linear-axi is an agent-native Rust CLI for direct, non-interactive Linear GraphQL operations.">
+  <title>magi-linear-axi — Direct Linear GraphQL for agents</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0e12;
+      --panel: #10171d;
+      --panel-raised: #151e26;
+      --panel-deep: #080c10;
+      --ink: #edf3ee;
+      --muted: #9daab0;
+      --dim: #6d7a81;
+      --line: #27343d;
+      --line-strong: #38505a;
+      --cyan: #78e4d3;
+      --cyan-deep: #2aa997;
+      --amber: #ffbe68;
+      --amber-deep: #c77b24;
+      --red: #ff8f7b;
+      --green: #9ee6a4;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --max: 1180px;
+      --radius: 2px;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-width: 320px;
+      margin: 0;
+      overflow-x: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.6;
+      text-rendering: optimizeLegibility;
+    }
+
+    body::before {
+      position: fixed;
+      z-index: -1;
+      inset: 0;
+      pointer-events: none;
+      content: "";
+      opacity: .22;
+      background-image:
+        linear-gradient(rgba(120, 228, 211, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 228, 211, .055) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: linear-gradient(to bottom, black 0%, transparent 72%);
+    }
+
+    ::selection {
+      background: var(--cyan);
+      color: var(--bg);
+    }
+
+    a {
+      color: var(--cyan);
+      text-decoration-thickness: 1px;
+      text-underline-offset: .2em;
+    }
+
+    a:hover {
+      color: var(--ink);
+    }
+
+    button,
+    a {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--amber);
+      outline-offset: 4px;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .skip-link:focus {
+      position: fixed;
+      z-index: 100;
+      top: .8rem;
+      left: .8rem;
+      width: auto;
+      height: auto;
+      padding: .55rem .75rem;
+      margin: 0;
+      overflow: visible;
+      clip: auto;
+      white-space: normal;
+      border: 1px solid var(--amber);
+      background: var(--panel-deep);
+      color: var(--amber);
+      font-family: var(--mono);
+      font-size: .76rem;
+      text-decoration: none;
+    }
+
+    .shell {
+      width: min(calc(100% - 2rem), var(--max));
+      margin-inline: auto;
+    }
+
+    .site-header {
+      position: sticky;
+      z-index: 10;
+      top: 0;
+      border-bottom: 1px solid rgba(56, 80, 90, .72);
+      background: rgba(10, 14, 18, .94);
+      backdrop-filter: blur(12px);
+    }
+
+    .site-nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .8rem 1.5rem;
+      min-height: 4.25rem;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: .72rem;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: .88rem;
+      font-weight: 700;
+      letter-spacing: -.04em;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 2.2rem;
+      height: 2.2rem;
+      place-items: center;
+      border: 1px solid var(--cyan);
+      background: var(--cyan);
+      color: var(--bg);
+    }
+
+    .brand-mark svg {
+      width: 1.35rem;
+      height: 1.35rem;
+    }
+
+    .brand-version {
+      margin-left: .15rem;
+      padding: .15rem .4rem;
+      border: 1px solid var(--line-strong);
+      color: var(--muted);
+      font-size: .65rem;
+      font-weight: 600;
+      letter-spacing: .08em;
+    }
+
+    .nav-links {
+      display: flex;
+      flex: 1;
+      justify-content: flex-end;
+      gap: 1.3rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-family: var(--mono);
+      font-size: .72rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--cyan);
+    }
+
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .52rem .78rem;
+      border: 1px solid var(--line-strong);
+      color: var(--amber) !important;
+    }
+
+    .nav-cta::before {
+      content: "↗";
+      font-size: .9rem;
+    }
+
+    main {
+      display: block;
+    }
+
+    section {
+      scroll-margin-top: 6rem;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(330px, .9fr);
+      gap: clamp(2rem, 6vw, 6rem);
+      align-items: center;
+      min-height: min(760px, calc(100svh - 4.25rem));
+      padding-block: clamp(4.5rem, 10vw, 8rem) clamp(4rem, 8vw, 7rem);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow,
+    .section-label,
+    .panel-label,
+    .metric-label,
+    .table-label {
+      font-family: var(--mono);
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .16em;
+      line-height: 1.3;
+      text-transform: uppercase;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .62rem;
+      color: var(--cyan);
+    }
+
+    .eyebrow::before {
+      display: inline-block;
+      width: 2.2rem;
+      height: 1px;
+      background: var(--cyan);
+      content: "";
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1,
+    h2,
+    h3 {
+      color: var(--ink);
+      text-wrap: balance;
+    }
+
+    h1 {
+      max-width: 760px;
+      margin: 1.4rem 0 1.5rem;
+      font-family: var(--mono);
+      font-size: clamp(3.3rem, 8.4vw, 7.7rem);
+      font-weight: 700;
+      letter-spacing: -.105em;
+      line-height: .88;
+    }
+
+    h1 .accent {
+      color: var(--cyan);
+    }
+
+    h1 .amber {
+      color: var(--amber);
+    }
+
+    .hero-lede {
+      max-width: 650px;
+      margin-bottom: 2rem;
+      color: var(--muted);
+      font-size: clamp(1.08rem, 1.7vw, 1.35rem);
+      line-height: 1.55;
+    }
+
+    .hero-lede strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .8rem;
+      align-items: center;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 2.8rem;
+      padding: .65rem 1rem;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      font-family: var(--mono);
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-decoration: none;
+      transition: border-color .18s ease, background-color .18s ease, color .18s ease, transform .18s ease;
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+    }
+
+    .button-primary {
+      border-color: var(--cyan);
+      background: var(--cyan);
+      color: var(--bg);
+    }
+
+    .button-primary:hover {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: var(--bg);
+    }
+
+    .button-secondary {
+      color: var(--ink);
+      background: transparent;
+    }
+
+    .button-secondary:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .hero-notes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem 1.1rem;
+      margin-top: 2.3rem;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .hero-notes span::before {
+      margin-right: .45rem;
+      color: var(--amber);
+      content: "·";
+    }
+
+    .hero-console {
+      position: relative;
+      border: 1px solid var(--line-strong);
+      background: var(--panel-deep);
+      box-shadow: 12px 12px 0 rgba(120, 228, 211, .08);
+    }
+
+    .hero-console::before,
+    .hero-console::after {
+      position: absolute;
+      width: 1.1rem;
+      height: 1.1rem;
+      border-color: var(--amber);
+      content: "";
+    }
+
+    .hero-console::before {
+      top: -1px;
+      left: -1px;
+      border-top: 2px solid;
+      border-left: 2px solid;
+    }
+
+    .hero-console::after {
+      right: -1px;
+      bottom: -1px;
+      border-right: 2px solid;
+      border-bottom: 2px solid;
+    }
+
+    .console-bar,
+    .console-foot {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: .7rem;
+      padding: .78rem 1rem;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .66rem;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+
+    .console-bar {
+      align-items: center;
+    }
+
+    .console-bar .online {
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
+      color: var(--green);
+    }
+
+    .online::before {
+      width: .45rem;
+      height: .45rem;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(158, 230, 164, .12);
+      content: "";
+    }
+
+    .console-body {
+      min-height: 245px;
+      padding: 1.5rem 1.1rem 1.25rem;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: clamp(.72rem, 1.2vw, .85rem);
+      line-height: 1.9;
+    }
+
+    .console-body p {
+      min-width: 26rem;
+      margin: 0;
+      white-space: pre;
+    }
+
+    .console-comment {
+      color: var(--dim);
+    }
+
+    .console-command {
+      color: var(--ink);
+    }
+
+    .console-command .prompt {
+      color: var(--amber);
+    }
+
+    .console-command .command-name {
+      color: var(--cyan);
+    }
+
+    .console-command .flag {
+      color: var(--amber);
+    }
+
+    .console-output {
+      color: var(--green);
+    }
+
+    .console-output .dim {
+      color: var(--dim);
+    }
+
+    .console-foot {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      font-size: .61rem;
+    }
+
+    .console-foot b {
+      color: var(--ink);
+    }
+
+    .signal-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .signal {
+      min-height: 6.8rem;
+      padding: 1.3rem 1rem;
+      border-right: 1px solid var(--line);
+    }
+
+    .signal:last-child {
+      border-right: 0;
+    }
+
+    .signal-value {
+      display: block;
+      margin-bottom: .25rem;
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: 1.18rem;
+      font-weight: 700;
+    }
+
+    .signal-copy {
+      display: block;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .67rem;
+      line-height: 1.35;
+      text-transform: uppercase;
+    }
+
+    .section {
+      padding-block: clamp(4.5rem, 9vw, 7.5rem);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(180px, .4fr) minmax(0, 1fr);
+      gap: 2rem;
+      align-items: start;
+      margin-bottom: 3rem;
+    }
+
+    .section-label {
+      padding-top: .35rem;
+      color: var(--amber);
+    }
+
+    .section-label::before {
+      display: block;
+      width: 2rem;
+      height: 1px;
+      margin-bottom: .85rem;
+      background: var(--amber);
+      content: "";
+    }
+
+    h2 {
+      margin-bottom: .8rem;
+      font-family: var(--mono);
+      font-size: clamp(2rem, 4.3vw, 4rem);
+      font-weight: 650;
+      letter-spacing: -.075em;
+      line-height: .98;
+    }
+
+    .section-intro {
+      max-width: 720px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .feature-card {
+      min-height: 15rem;
+      padding: 1.45rem;
+      background: var(--panel);
+    }
+
+    .feature-card:nth-child(3n + 2) {
+      background: #121b21;
+    }
+
+    .feature-index {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 2.6rem;
+      color: var(--amber);
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .12em;
+    }
+
+    .feature-index::after {
+      width: 3rem;
+      height: 1px;
+      margin-top: .45rem;
+      background: var(--line-strong);
+      content: "";
+    }
+
+    h3 {
+      margin-bottom: .65rem;
+      font-family: var(--mono);
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -.04em;
+      line-height: 1.2;
+    }
+
+    .feature-card p,
+    .resource-card p,
+    .notes p {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: .91rem;
+      line-height: 1.55;
+    }
+
+    .feature-card code,
+    .resource-card code,
+    .notes code,
+    .inline-code {
+      padding: .12rem .32rem;
+      border: 1px solid var(--line);
+      background: var(--panel-deep);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: .82em;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .resource-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+    }
+
+    .resource-card {
+      min-height: 13rem;
+      padding: 1.3rem;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .resource-card h3 {
+      margin-top: 1.1rem;
+    }
+
+    .resource-card p {
+      font-size: .84rem;
+    }
+
+    .resource-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .35rem;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.45rem;
+      padding: .15rem .38rem;
+      border: 1px solid var(--line-strong);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .6rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .tag.read {
+      border-color: rgba(120, 228, 211, .42);
+      color: var(--cyan);
+    }
+
+    .tag.write {
+      border-color: rgba(255, 190, 104, .42);
+      color: var(--amber);
+    }
+
+    .tag.raw {
+      border-color: rgba(255, 143, 123, .42);
+      color: var(--red);
+    }
+
+    .resource-note {
+      margin-top: 1.4rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .68rem;
+    }
+
+    .command-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: var(--panel-deep);
+    }
+
+    .command-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: .72rem .88rem;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .command-head .panel-label {
+      color: var(--muted);
+    }
+
+    .copy-button {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      min-height: 2rem;
+      padding: .3rem .55rem;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--cyan);
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: .67rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+
+    .copy-button:hover {
+      border-color: var(--cyan);
+      background: rgba(120, 228, 211, .08);
+    }
+
+    .copy-button.is-fallback {
+      border-color: var(--amber);
+      color: var(--amber);
+    }
+
+    pre {
+      margin: 0;
+      overflow-x: auto;
+      tab-size: 2;
+    }
+
+    .command-card pre {
+      min-height: 5.7rem;
+      padding: 1.15rem 1rem;
+    }
+
+    code,
+    pre {
+      font-family: var(--mono);
+    }
+
+    .command-card code {
+      color: var(--ink);
+      font-size: .78rem;
+      line-height: 1.75;
+      white-space: pre;
+    }
+
+    .command-caption {
+      padding: .72rem 1rem;
+      border-top: 1px solid var(--line);
+      color: var(--dim);
+      font-size: .78rem;
+    }
+
+    .command-caption strong {
+      color: var(--muted);
+    }
+
+    .contract-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr);
+      gap: 1rem;
+      align-items: stretch;
+    }
+
+    .contract-panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .contract-panel-head {
+      padding: .85rem 1rem;
+      border-bottom: 1px solid var(--line);
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+
+    .grammar {
+      padding: 1.35rem 1rem;
+      color: var(--muted);
+      font-size: .85rem;
+    }
+
+    .grammar code {
+      display: block;
+      color: var(--ink);
+      font-size: .82rem;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+
+    .grammar .key {
+      color: var(--amber);
+    }
+
+    .grammar .value {
+      color: var(--cyan);
+    }
+
+    .contract-list {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0;
+      margin: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .contract-list div {
+      padding: 1rem;
+      border-right: 1px solid var(--line);
+    }
+
+    .contract-list div:last-child {
+      border-right: 0;
+    }
+
+    .contract-list dt {
+      margin-bottom: .35rem;
+      color: var(--amber);
+      font-family: var(--mono);
+      font-size: .72rem;
+      font-weight: 700;
+    }
+
+    .contract-list dd {
+      margin: 0;
+      color: var(--muted);
+      font-size: .78rem;
+      line-height: 1.45;
+    }
+
+    .error-panel {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .error-panel pre {
+      flex: 1;
+      padding: 1.35rem 1rem;
+      color: var(--green);
+      font-size: .8rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+    }
+
+    .error-note {
+      padding: .85rem 1rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .8rem;
+    }
+
+    .benchmark-section {
+      background: #0c1216;
+    }
+
+    .benchmark-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      margin-bottom: 1rem;
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .benchmark-kicker::before {
+      display: inline-block;
+      width: .5rem;
+      height: .5rem;
+      border-radius: 50%;
+      background: var(--green);
+      content: "";
+    }
+
+    .benchmark-intro {
+      max-width: 780px;
+      margin-bottom: 2.2rem;
+      color: var(--muted);
+      font-size: 1.03rem;
+    }
+
+    .benchmark-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-bottom: 1rem;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .benchmark-metric {
+      min-height: 10rem;
+      padding: 1.3rem 1rem;
+      background: var(--panel-deep);
+    }
+
+    .metric-value {
+      display: block;
+      margin: .65rem 0 .3rem;
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-size: clamp(1.9rem, 4vw, 3.2rem);
+      font-weight: 700;
+      letter-spacing: -.08em;
+      line-height: 1;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: .63rem;
+      letter-spacing: .1em;
+    }
+
+    .metric-sub {
+      margin: .7rem 0 0;
+      color: var(--dim);
+      font-size: .76rem;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      background: var(--panel-deep);
+    }
+
+    table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      text-align: left;
+    }
+
+    caption {
+      padding: 1rem;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .7rem;
+      letter-spacing: .06em;
+      text-align: left;
+      text-transform: uppercase;
+    }
+
+    th,
+    td {
+      padding: .88rem 1rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: .82rem;
+    }
+
+    th {
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .64rem;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    td {
+      color: var(--muted);
+    }
+
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+
+    td:first-child {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .positive {
+      color: var(--cyan);
+      font-family: var(--mono);
+      font-weight: 700;
+    }
+
+    .good {
+      color: var(--green);
+      font-family: var(--mono);
+      font-weight: 700;
+    }
+
+    .caution {
+      color: var(--amber);
+      font-family: var(--mono);
+      font-weight: 700;
+    }
+
+    .benchmark-notes {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .notes {
+      padding: 1.15rem 1.2rem;
+      border-left: 2px solid var(--cyan-deep);
+      background: var(--panel);
+    }
+
+    .notes.warning {
+      border-left-color: var(--amber-deep);
+    }
+
+    .notes h3 {
+      margin-bottom: .5rem;
+      color: var(--cyan);
+      font-size: .88rem;
+      letter-spacing: .02em;
+    }
+
+    .notes.warning h3 {
+      color: var(--amber);
+    }
+
+    .notes p {
+      font-size: .82rem;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-top: 1rem;
+      border: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .matrix-cell {
+      min-height: 7rem;
+      padding: 1rem;
+      background: var(--panel);
+    }
+
+    .matrix-cell strong {
+      display: block;
+      margin-bottom: .35rem;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: .85rem;
+    }
+
+    .matrix-cell span {
+      display: block;
+      color: var(--muted);
+      font-size: .78rem;
+    }
+
+    .method-copy {
+      max-width: 830px;
+      margin-bottom: 1.5rem;
+      color: var(--muted);
+    }
+
+    .method-list {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin: 0;
+    }
+
+    .method-item {
+      padding: 1.2rem;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .method-item dt {
+      margin-bottom: .55rem;
+      color: var(--amber);
+      font-family: var(--mono);
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .method-item dd {
+      margin: 0;
+      color: var(--muted);
+      font-size: .82rem;
+      line-height: 1.5;
+    }
+
+    .final-cta {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2rem;
+      align-items: center;
+      padding-block: clamp(4.5rem, 8vw, 7rem);
+    }
+
+    .final-cta h2 {
+      max-width: 760px;
+      margin-bottom: .75rem;
+    }
+
+    .final-cta p {
+      max-width: 700px;
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    footer {
+      border-top: 1px solid var(--line);
+    }
+
+    .footer-inner {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 1.5rem;
+      padding-block: 1.5rem 2.5rem;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: .68rem;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .footer-links a {
+      color: var(--muted);
+    }
+
+    @media (max-width: 950px) {
+      .hero {
+        grid-template-columns: 1fr;
+        gap: 3.5rem;
+      }
+
+      .hero-console {
+        max-width: 700px;
+      }
+
+      .resource-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .benchmark-metrics {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .matrix {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(calc(100% - 1.25rem), var(--max));
+      }
+
+      .site-nav {
+        gap: .7rem 1rem;
+        padding-block: .7rem;
+      }
+
+      .nav-links {
+        flex-basis: 100%;
+        justify-content: flex-start;
+        order: 3;
+        gap: 1rem;
+        overflow-x: auto;
+        padding-bottom: .2rem;
+      }
+
+      .hero {
+        min-height: auto;
+        padding-block: 4rem 4.5rem;
+      }
+
+      h1 {
+        font-size: clamp(3.2rem, 17vw, 5.3rem);
+      }
+
+      .signal-strip,
+      .feature-grid,
+      .split,
+      .contract-grid,
+      .benchmark-notes,
+      .method-list,
+      .final-cta {
+        grid-template-columns: 1fr;
+      }
+
+      .signal-strip {
+        border-right: 0;
+      }
+
+      .signal {
+        min-height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .signal:last-child {
+        border-bottom: 0;
+      }
+
+      .section-head {
+        grid-template-columns: 1fr;
+        gap: 1.2rem;
+        margin-bottom: 2rem;
+      }
+
+      .feature-card {
+        min-height: auto;
+      }
+
+      .feature-index {
+        margin-bottom: 1.5rem;
+      }
+
+      .resource-grid,
+      .benchmark-metrics,
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+
+      .contract-list {
+        grid-template-columns: 1fr;
+      }
+
+      .contract-list div {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .contract-list div:last-child {
+        border-bottom: 0;
+      }
+
+      .final-cta .button {
+        justify-self: start;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link sr-only" href="#main-content">Skip to content</a>
+
+  <header class="site-header">
+    <nav class="site-nav shell" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="magi-linear-axi home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 18V6l5.2 7L14.4 6v12M18 6v12" />
+          </svg>
+        </span>
+        <span>magi-linear-axi</span>
+        <span class="brand-version">v0.2.1</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#surface">Surface</a></li>
+        <li><a href="#start">Start</a></li>
+        <li><a href="#benchmark">Benchmark</a></li>
+        <li><a class="nav-cta" href="https://github.com/magimetal/magi-linear-axi" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main-content">
+    <section class="hero shell" id="top" aria-labelledby="hero-title">
+      <div>
+        <span class="eyebrow">Linear GraphQL / agent-native Rust CLI</span>
+        <h1 id="hero-title">Direct.<br><span class="accent">Bounded.</span><br><span class="amber">Composable.</span></h1>
+        <p class="hero-lede"><strong>magi-linear-axi</strong> gives agents a direct, non-interactive path to Linear—without another Linear CLI in the middle. It speaks modeled resource commands, emits compact structured data, and leaves raw GraphQL available when the model needs the escape hatch.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#start">Install in seconds <span aria-hidden="true">→</span></a>
+          <a class="button button-secondary" href="#benchmark">See the evidence <span aria-hidden="true">↘</span></a>
+        </div>
+        <div class="hero-notes" aria-label="Product properties">
+          <span>never prompts</span>
+          <span>TOON by default</span>
+          <span>API key stays in env</span>
+        </div>
+      </div>
+
+      <div class="hero-console" aria-label="Example non-interactive command">
+        <div class="console-bar">
+          <span class="online">request path ready</span>
+          <span>session / no tty</span>
+        </div>
+        <div class="console-body">
+          <p class="console-comment"># one bounded command, one structured result</p>
+          <p class="console-command"><span class="prompt">$</span> <span class="command-name">magi-linear-axi issue view</span> ENG-123 \</p>
+          <p class="console-command">  <span class="flag">--fields compact</span></p>
+          <p class="console-output">✓ issue.identifier  ENG-123</p>
+          <p class="console-output">✓ issue.title       <span class="dim">…</span></p>
+          <p class="console-output">✓ pageInfo          <span class="dim">bounded connection</span></p>
+        </div>
+        <div class="console-foot">
+          <span><b>TOON</b> default</span>
+          <span><b>JSON</b> opt-in</span>
+          <span><b>0</b> prompts</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="signal-strip shell" aria-label="At a glance">
+      <div class="signal">
+        <span class="signal-value">10+</span>
+        <span class="signal-copy">Linear resource families</span>
+      </div>
+      <div class="signal">
+        <span class="signal-value">240</span>
+        <span class="signal-copy">Unicode code points default bound</span>
+      </div>
+      <div class="signal">
+        <span class="signal-value">0 / 1 / 2</span>
+        <span class="signal-copy">Success / operational / usage</span>
+      </div>
+      <div class="signal">
+        <span class="signal-value">Rust</span>
+        <span class="signal-copy">1.87+ · ISC licensed</span>
+      </div>
+    </section>
+
+    <section class="section shell" id="overview" aria-labelledby="overview-title">
+      <div class="section-head">
+        <div class="section-label">01 / Why AXI</div>
+        <div>
+          <h2 id="overview-title">A small contract for a large API.</h2>
+          <p class="section-intro">The CLI is shaped for automation first: explicit inputs, stable output classes, bounded reads, and no hidden state. Use the modeled surface for routine work; use GraphQL directly when the model needs more control.</p>
+        </div>
+      </div>
+
+      <div class="feature-grid">
+        <article class="feature-card">
+          <div class="feature-index">01 / boundary</div>
+          <h3>Non-interactive by construction</h3>
+          <p>Commands never prompt. Supply identifiers, values, files, stdin, flags, or environment variables—so an agent can reason about the entire request before it runs.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-index">02 / format</div>
+          <h3>TOON first, strict JSON optional</h3>
+          <p>Compact <code>TOON</code> is the default structured format. Add <code>--format json</code> for a downstream parser that requires strict, compact JSON.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-index">03 / failure</div>
+          <h3>Errors are data</h3>
+          <p>Application errors carry stable <code>type</code>, <code>code</code>, and <code>message</code> fields. Exit <code>1</code> means operational failure; exit <code>2</code> means fix the invocation.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-index">04 / payload</div>
+          <h3>Compact projections</h3>
+          <p>Use <code>--fields compact</code> on supported issue, comment, relation, and project reads. Connections retain <code>pageInfo</code>, so bounded output still says whether more exists.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-index">05 / surface</div>
+          <h3>Resource-shaped commands</h3>
+          <p>Issues, teams, users, projects, cycles, milestones, initiatives, labels, documents, updates, comments, links, attachments, and relations share one discoverable command grammar.</p>
+        </article>
+        <article class="feature-card">
+          <div class="feature-index">06 / escape hatch</div>
+          <h3>Raw GraphQL, still bounded</h3>
+          <p><code>api</code> accepts a query from an argument or stdin, with variables and pagination support. <code>schema</code> exports the current schema. Review raw mutations before sending them.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" id="surface" aria-labelledby="surface-title">
+      <div class="section-head">
+        <div class="section-label">02 / Command surface</div>
+        <div>
+          <h2 id="surface-title">Read what matters. Write with intent.</h2>
+          <p class="section-intro">Modeled commands keep common Linear workflows legible to both people and agents. Resource families expose their supported read and write paths without requiring a second CLI.</p>
+        </div>
+      </div>
+
+      <div class="resource-grid">
+        <article class="resource-card">
+          <div class="resource-tags"><span class="tag read">read</span><span class="tag write">write</span></div>
+          <h3>Issues + relations</h3>
+          <p>Mine, list, query, view, create, update, start, delete. Add comments, links, attachments, and issue relations with explicit identifiers.</p>
+          <div class="resource-note">issue · comment · relation</div>
+        </article>
+        <article class="resource-card">
+          <div class="resource-tags"><span class="tag read">read</span><span class="tag write">write</span></div>
+          <h3>Teams + users</h3>
+          <p>Discover teams, members, states, and users. Create or delete teams while keeping user access read-oriented.</p>
+          <div class="resource-note">team · user</div>
+        </article>
+        <article class="resource-card">
+          <div class="resource-tags"><span class="tag read">read</span><span class="tag write">write</span></div>
+          <h3>Planning graph</h3>
+          <p>Projects, project updates, cycles, milestones, initiatives, and initiative updates for portfolio-to-issue workflows.</p>
+          <div class="resource-note">project · cycle · milestone · initiative</div>
+        </article>
+        <article class="resource-card">
+          <div class="resource-tags"><span class="tag read">read</span><span class="tag write">write</span></div>
+          <h3>Labels + documents</h3>
+          <p>List, create, and delete labels. Read and manage documents with inline content, files, or stdin.</p>
+          <div class="resource-note">label · document</div>
+        </article>
+      </div>
+
+      <div class="split" style="margin-top: 1rem;">
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">Compact read</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-compact" aria-label="Copy compact issue query command">Copy</button>
+          </div>
+          <pre><code id="cmd-compact">magi-linear-axi issue query --team ENG --search 'authentication' --fields compact</code></pre>
+          <div class="command-caption"><strong>Bound the payload.</strong> Keep the fields an agent actually needs.</div>
+        </div>
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">Raw GraphQL</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-graphql" aria-label="Copy raw GraphQL command">Copy</button>
+          </div>
+          <pre><code id="cmd-graphql">magi-linear-axi api '{ viewer { id name email } }'</code></pre>
+          <div class="command-caption"><strong>Keep control.</strong> Read from an argument or pipe a document through stdin.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell" id="start" aria-labelledby="start-title">
+      <div class="section-head">
+        <div class="section-label">03 / Start here</div>
+        <div>
+          <h2 id="start-title">Install. Authenticate. Ask.</h2>
+          <p class="section-intro">The published path is one Cargo command. A source checkout uses the same locked install flow. API keys stay in the environment and are never stored by setup.</p>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">From crates.io</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-install" aria-label="Copy crates.io install command">Copy</button>
+          </div>
+          <pre><code id="cmd-install">cargo install magi-linear-axi --locked
+magi-linear-axi --version</code></pre>
+          <div class="command-caption"><strong>Published binary.</strong> Browse the package on <a href="https://crates.io/crates/magi-linear-axi" target="_blank" rel="noopener noreferrer">crates.io</a>.</div>
+        </div>
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">From a source checkout</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-source" aria-label="Copy source install command">Copy</button>
+          </div>
+          <pre><code id="cmd-source">cargo install --path . --locked</code></pre>
+          <div class="command-caption"><strong>Local development.</strong> Run from the repository root.</div>
+        </div>
+      </div>
+
+      <div class="split" style="margin-top: 1rem;">
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">Authenticate without a prompt</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-auth" aria-label="Copy authentication command">Copy</button>
+          </div>
+          <pre><code id="cmd-auth">export LINEAR_API_KEY='lin_api_...'
+magi-linear-axi auth whoami</code></pre>
+          <div class="command-caption"><strong>Environment only.</strong> Use a Linear personal API key; the placeholder above is not a credential.</div>
+        </div>
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">First useful read</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-first-read" aria-label="Copy first useful read commands">Copy</button>
+          </div>
+          <pre><code id="cmd-first-read">magi-linear-axi team list
+magi-linear-axi issue list --team ENG --limit 25
+magi-linear-axi issue view ENG-123 --full</code></pre>
+          <div class="command-caption"><strong>Discover, then inspect.</strong> Replace the example identifiers with your own.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="contract-title">
+      <div class="section-head">
+        <div class="section-label">04 / Output contract</div>
+        <div>
+          <h2 id="contract-title">Make every result easy to branch on.</h2>
+          <p class="section-intro">Success data and application errors go to stdout; diagnostics go to stderr. The same global flags work before or after subcommands, and <code class="inline-code">--full</code> opts out of the default string bound.</p>
+        </div>
+      </div>
+
+      <div class="contract-grid">
+        <div class="contract-panel">
+          <div class="contract-panel-head">Invocation grammar</div>
+          <div class="grammar">
+            <code><span class="key">magi-linear-axi</span> [--workspace &lt;slug&gt;] [--endpoint &lt;url&gt;]
+                [--format <span class="value">toon|json</span>] [--full]
+                &lt;command&gt; [args]</code>
+          </div>
+          <dl class="contract-list">
+            <div>
+              <dt>TOON</dt>
+              <dd>Compact structured output is the default.</dd>
+            </div>
+            <div>
+              <dt>JSON</dt>
+              <dd>Use <code class="inline-code">--format json</code> for compact JSON consumers.</dd>
+            </div>
+            <div>
+              <dt>BOUND</dt>
+              <dd>Strings truncate at 240 Unicode code points unless <code class="inline-code">--full</code> is set.</dd>
+            </div>
+          </dl>
+        </div>
+        <div class="contract-panel error-panel">
+          <div class="contract-panel-head">Stable error shape</div>
+          <pre><code>{"error":{"type":"auth","code":1,"message":"LINEAR_API_KEY must be set and non-empty"}}</code></pre>
+          <div class="error-note">Exit <strong>0</strong>: success, empty result, or safe no-op. Exit <strong>1</strong>: auth, config, network, API, or output failure. Exit <strong>2</strong>: command or argument usage failure.</div>
+        </div>
+      </div>
+
+      <div class="notes warning" style="margin-top: 1rem;">
+        <h3>Parser nuance worth knowing</h3>
+        <p>API-backed results and post-parse application errors can render as compact JSON. Help, version, completions, and a few documented single-document outputs remain plain text; parser-level failures happen before format resolution and are emitted as structured TOON.</p>
+      </div>
+    </section>
+
+    <section class="section benchmark-section" id="benchmark" aria-labelledby="benchmark-title">
+      <div class="shell">
+        <div class="section-head">
+          <div class="section-label">05 / Evidence</div>
+          <div>
+            <span class="benchmark-kicker">v0.2.1 final aggregate · read-only</span>
+            <h2 id="benchmark-title">Compact output changes the economics.</h2>
+            <p class="benchmark-intro">In the compact contract comparison, AXI and the official Linear read-only MCP both completed every measured condition cleanly: <strong>24/24 deterministic and 24/24 judge passes each</strong>. The aggregate recorded <strong>zero safety, policy, or unexpected incidents</strong> in either condition. AXI used fewer reported tokens and cost less, with a measured wall-time trade-off.</p>
+          </div>
+        </div>
+
+        <div class="benchmark-metrics" aria-label="Compact benchmark headline metrics">
+          <div class="benchmark-metric">
+            <span class="metric-label">reported tokens</span>
+            <span class="metric-value">−38.9%</span>
+            <p class="metric-sub">AXI vs official readonly MCP</p>
+          </div>
+          <div class="benchmark-metric">
+            <span class="metric-label">reported cost</span>
+            <span class="metric-value">−17.0%</span>
+            <p class="metric-sub">AXI vs official readonly MCP</p>
+          </div>
+          <div class="benchmark-metric">
+            <span class="metric-label">agent wall time</span>
+            <span class="metric-value">+14.2%</span>
+            <p class="metric-sub">AXI was slower in this cohort</p>
+          </div>
+          <div class="benchmark-metric">
+            <span class="metric-label">deterministic + judge</span>
+            <span class="metric-value">24/24</span>
+            <p class="metric-sub">both compact conditions</p>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption>Compact contract · AXI vs official Linear readonly MCP</caption>
+            <thead>
+              <tr>
+                <th scope="col">Measure</th>
+                <th scope="col">AXI</th>
+                <th scope="col">Official readonly MCP</th>
+                <th scope="col">Readout</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Deterministic pass</td>
+                <td class="good">24 / 24</td>
+                <td class="good">24 / 24</td>
+                <td>Parity</td>
+              </tr>
+              <tr>
+                <td>LLM judge pass</td>
+                <td class="good">24 / 24</td>
+                <td class="good">24 / 24</td>
+                <td>Parity</td>
+              </tr>
+              <tr>
+                <td>Reported token usage</td>
+                <td class="positive">−38.9%</td>
+                <td>baseline</td>
+                <td>AXI lower</td>
+              </tr>
+              <tr>
+                <td>Reported cost</td>
+                <td class="positive">−17.0%</td>
+                <td>baseline</td>
+                <td>AXI lower</td>
+              </tr>
+              <tr>
+                <td>Agent wall time</td>
+                <td class="caution">+14.2%</td>
+                <td>baseline</td>
+                <td>AXI slower</td>
+              </tr>
+              <tr>
+                <td>Safety / policy / unexpected incidents</td>
+                <td class="good">0 / 0 / 0</td>
+                <td class="good">0 / 0 / 0</td>
+                <td>None observed</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="benchmark-notes">
+          <article class="notes">
+            <h3>What “read-only” means here</h3>
+            <p>The harness used a least-privilege read-only key, query-only snapshot preparation, an AXI key-free wrapper and broker with bounded read validation, and the official MCP readonly endpoint. Mutation-shaped calls and shell composition were audited as safety/policy findings. The published comparison is aggregate-only.</p>
+          </article>
+          <article class="notes warning">
+<h3>Canonical answer schema: tested, not adopted</h3>
+<p>The final assessment retained the compact contract and rejected the experimental canonical answer schema, even though terminal answers were about <strong>23% shorter</strong>. Across the aggregate comparison, output tokens rose <strong>+82%</strong>, cost rose <strong>+54.1%</strong>, and turns rose <strong>+41.2%</strong>. Canonical was a benchmark answer-format experiment, not a CLI output mode.</p>
+          </article>
+        </div>
+
+        <div class="matrix" aria-label="96-cell benchmark matrix">
+          <div class="matrix-cell">
+            <strong>2 interfaces</strong>
+            <span>AXI CLI + official readonly MCP</span>
+          </div>
+          <div class="matrix-cell">
+            <strong>2 contracts</strong>
+            <span>compact + canonical answer shape</span>
+          </div>
+          <div class="matrix-cell">
+            <strong>8 tasks</strong>
+            <span>single-step, multi-step, investigation, error recovery</span>
+          </div>
+          <div class="matrix-cell">
+            <strong>3 repeats</strong>
+            <span>2 × 2 × 8 × 3 = 96 measured cells</span>
+          </div>
+        </div>
+
+        <dl class="method-list" style="margin-top: 1rem;">
+          <div class="method-item">
+            <dt>Same facts</dt>
+            <dd>Both conditions worked from the same generated read-only task set and were graded against the same required facts.</dd>
+          </div>
+          <div class="method-item">
+            <dt>Two gates</dt>
+            <dd>Deterministic checks enforced operation semantics and grounded evidence; an LLM judge assessed the final response as a second signal.</dd>
+          </div>
+          <div class="method-item">
+            <dt>Timing boundary</dt>
+            <dd>Agent wall time covers agent/interface execution. Judge execution and judge artifacts are excluded from that primary measure.</dd>
+          </div>
+        </dl>
+
+        <p class="sr-only" id="copy-status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="section shell" aria-labelledby="integrate-title">
+      <div class="section-head">
+        <div class="section-label">06 / Extend</div>
+        <div>
+          <h2 id="integrate-title">Fits the agent loop you already have.</h2>
+          <p class="section-intro">Optional setup wires session-start context into supported coding agents, while completions and help keep the command surface discoverable for humans.</p>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">Session integration</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-setup" aria-label="Copy agent setup command">Copy</button>
+          </div>
+          <pre><code id="cmd-setup">magi-linear-axi setup</code></pre>
+          <div class="command-caption"><strong>Explicit and idempotent.</strong> Targets include Claude Code, Codex, and OpenCode.</div>
+        </div>
+        <div class="command-card">
+          <div class="command-head">
+            <span class="panel-label">Schema export</span>
+            <button class="copy-button" type="button" data-copy-target="#cmd-schema" aria-label="Copy schema export command">Copy</button>
+          </div>
+          <pre><code id="cmd-schema">magi-linear-axi schema --output linear-schema.json</code></pre>
+          <div class="command-caption"><strong>Know the shape.</strong> Export the Linear schema when a tool or review needs it.</div>
+        </div>
+      </div>
+
+      <div class="final-cta">
+        <div>
+          <h2>Less ceremony between an agent and Linear.</h2>
+          <p>Start with the compact modeled commands. Keep <code class="inline-code">api</code> close for the cases that genuinely need GraphQL.</p>
+        </div>
+        <a class="button button-primary" href="https://github.com/magimetal/magi-linear-axi" target="_blank" rel="noopener noreferrer">Open the repository <span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner shell">
+      <span>magi-linear-axi · direct Linear GraphQL · ISC</span>
+      <div class="footer-links">
+        <a href="https://github.com/magimetal/magi-linear-axi" target="_blank" rel="noopener noreferrer">GitHub repository</a>
+        <a href="https://github.com/magimetal/magi-linear-axi/pull/20" target="_blank" rel="noopener noreferrer">Benchmark / PR #20</a>
+        <a href="https://docs.rs/magi-linear-axi" target="_blank" rel="noopener noreferrer">docs.rs</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var status = document.getElementById("copy-status");
+
+      function announce(message) {
+        if (status) {
+          status.textContent = message;
+        }
+      }
+
+      function selectTarget(target) {
+        var selection = window.getSelection();
+        if (!selection || !target) {
+          return;
+        }
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+
+      function fallbackCopy(text, target) {
+        var area = document.createElement("textarea");
+        var copied = false;
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.top = "0";
+        area.style.left = "-9999px";
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        area.setSelectionRange(0, area.value.length);
+        try {
+          copied = document.execCommand("copy");
+        } catch (error) {
+          copied = false;
+        }
+        document.body.removeChild(area);
+        if (!copied) {
+          selectTarget(target);
+        }
+        return copied;
+      }
+
+      function copyText(text, target) {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          return navigator.clipboard.writeText(text).then(function () {
+            return true;
+          }).catch(function () {
+            return fallbackCopy(text, target);
+          });
+        }
+        return Promise.resolve(fallbackCopy(text, target));
+      }
+
+      document.querySelectorAll("[data-copy-target]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var target = document.querySelector(button.getAttribute("data-copy-target"));
+          var text = target ? target.textContent.trim() : "";
+          var original = button.getAttribute("data-original-label") || button.textContent;
+          var copied;
+
+          if (!target || !text) {
+            announce("The command could not be found. Select it manually.");
+            return;
+          }
+
+          button.setAttribute("data-original-label", original);
+          copyText(text, target).then(function (success) {
+            copied = success;
+            button.textContent = copied ? "Copied" : "Select + copy";
+            button.classList.toggle("is-fallback", !copied);
+            announce(copied ? "Command copied to the clipboard." : "Clipboard access is unavailable. The command is selected for manual copying.");
+            window.setTimeout(function () {
+              button.textContent = original;
+              button.classList.remove("is-fallback");
+            }, 2200);
+          });
+        });
+      });
+    }());
+  </script>
+</body>
+</html>
