@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+### Added
+
+- Add content-free stream phase-size instrumentation using Unicode code points and UTF-8 bytes for assistant tool arguments, visible preterminal text, terminal answers, exposed thinking, and linked tool results. Reports preserve exact provider output-token totals, expose missing coverage as `n/a`, aggregate phases by condition/category, and identify largest fully covered AXI−MCP generated-phase delta.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added

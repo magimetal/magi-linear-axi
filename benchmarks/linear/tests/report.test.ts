@@ -46,6 +46,10 @@ describe("report aggregation", () => {
     expect(aggregate.passed).toBe(1);
     expect(aggregate.byCondition.map((row) => row.key)).toEqual(["axi", "mcp"]);
     expect(aggregate.byTask).toHaveLength(2);
+    expect(aggregate.byCategory.map((row) => row.key)).toEqual([
+      "axi/single_step",
+      "mcp/single_step",
+    ]);
     expect(aggregate.byCondition.find((row) => row.condition === "axi")?.meanWallTimeMs).toBe(1000);
     expect(aggregate.wallTimeMs).toBe(4000);
     expect(aggregate.byCondition.find((row) => row.condition === "mcp")?.meanToolCalls).toBe(3);
@@ -62,6 +66,120 @@ describe("report aggregation", () => {
     expect(csv).not.toContain("secret dynamic answer");
   });
 
+
+  it("aggregates phase proxies with explicit coverage by condition and category", () => {
+    const coveredZero = result({
+      phaseMetrics: {
+        terminalAnswerText: { codePoints: 0, utf8Bytes: 0 },
+        coverage: ["terminalAnswerText"],
+      },
+    });
+    const unavailable = result({
+      resultId: "unavailable",
+      repeatIndex: 2,
+      outputTokensCovered: false,
+      phaseMetrics: { coverage: [] },
+    });
+    const aggregate = aggregateResults([coveredZero, unavailable]);
+    expect(aggregate.phaseSizes.terminalAnswerText).toEqual({
+      totalCodePoints: 0,
+      totalUtf8Bytes: 0,
+      coveredRuns: 1,
+      meanCodePoints: 0,
+      meanUtf8Bytes: 0,
+    });
+    expect(aggregate.phaseSizes.thinkingReasoning).toEqual({
+      totalCodePoints: 0,
+      totalUtf8Bytes: 0,
+      coveredRuns: 0,
+    });
+    expect(aggregate.outputTokensCoveredRuns).toBe(1);
+    expect(aggregate.meanOutputTokens).toBe(20);
+    expect(aggregate.byCategory[0]?.key).toBe("axi/single_step");
+    const markdown = renderMarkdownReport([coveredZero, unavailable], aggregate);
+    const csv = renderCsvReport(aggregate);
+    expect(markdown).toContain("terminalAnswerText | 0 | 0 | 0 | 0 | 1/2");
+    expect(markdown).toContain("thinkingReasoning | n/a | n/a | n/a | n/a | 0/2");
+    expect(markdown).toContain("Phase sizes by condition and task category");
+    expect(csv).toContain("terminal_answer_text_mean_code_points");
+    expect(csv).toContain("category,,single_step,axi");
+    expect(csv).toContain("n/a");
+  });
+
+  it("reports largest fully covered phase delta and keeps aggregate reports content-free", () => {
+    const canaries = [
+      "RAW_PROMPT_CANARY",
+      "ANSWER_CANARY",
+      "TOOL_ARGUMENT_CANARY",
+      "TOOL_RESULT_CANARY",
+      "WORKSPACE_ID_CANARY",
+      "WORKSPACE_VALUE_CANARY",
+    ];
+    const axi = result({
+      finalAnswer: `${canaries[0]} ${canaries[1]}`,
+      rawPath: canaries[4],
+      deterministicGrade: {
+        ...result().deterministicGrade,
+        reason: `${canaries[2]} ${canaries[3]}`,
+      },
+      llmGrade: {
+        status: "passed",
+        model: "judge",
+        rationale: canaries[5],
+        output: canaries.join(" "),
+      },
+      phaseMetrics: {
+        assistantToolArguments: { codePoints: 30, utf8Bytes: 30 },
+        terminalAnswerText: { codePoints: 40, utf8Bytes: 40 },
+        linkedToolResultText: { codePoints: 100, utf8Bytes: 100 },
+        coverage: [
+          "assistantToolArguments",
+          "terminalAnswerText",
+          "linkedToolResultText",
+        ],
+      },
+    });
+    const mcp = result({
+      resultId: "mcp",
+      condition: "mcp",
+      mcpToolCalls: 1,
+      bashToolCalls: 0,
+      phaseMetrics: {
+        assistantToolArguments: { codePoints: 10, utf8Bytes: 10 },
+        terminalAnswerText: { codePoints: 35, utf8Bytes: 35 },
+        linkedToolResultText: { codePoints: 1, utf8Bytes: 1 },
+        coverage: [
+          "assistantToolArguments",
+          "terminalAnswerText",
+          "linkedToolResultText",
+        ],
+      },
+    });
+    const aggregate = aggregateResults([axi, mcp]);
+    const markdown = renderMarkdownReport([axi, mcp], aggregate);
+    const csv = renderCsvReport(aggregate);
+    expect(markdown).toContain(
+      "Largest fully covered measurable generated-phase AXI−MCP delta: assistantToolArguments (20 Unicode code points/run)",
+    );
+    expect(markdown).toContain("linkedToolResultText` is subsequent input");
+    for (const canary of canaries) {
+      expect(JSON.stringify(aggregate)).not.toContain(canary);
+      expect(markdown).not.toContain(canary);
+      expect(csv).not.toContain(canary);
+    }
+  });
+
+  it("renders missing provider output usage as n/a instead of zero", () => {
+    const missing = result({
+      outputTokens: 0,
+      outputTokensCovered: false,
+      phaseMetrics: { coverage: [] },
+    });
+    const aggregate = aggregateResults([missing]);
+    expect(aggregate.meanOutputTokens).toBeUndefined();
+    expect(renderMarkdownReport([missing], aggregate)).toContain("n/a (0/1)");
+    expect(renderCsvReport(aggregate)).toContain(",n/a,0,");
+  });
   it("reports deterministic/judge agreement and excludes skipped or error judges", () => {
     const results = [
       result({ llmGrade: { status: "passed", model: "judge" } }),

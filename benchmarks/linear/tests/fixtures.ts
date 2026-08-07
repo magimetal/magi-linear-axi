@@ -159,6 +159,17 @@ export function result(
 		cacheReadInputTokens: 2,
 		cacheCreationInputTokens: 1,
 		outputTokens: 20,
+		outputTokensCovered: true,
+		phaseMetrics: {
+			assistantToolArguments: { codePoints: 24, utf8Bytes: 24 },
+			terminalAnswerText: { codePoints: 21, utf8Bytes: 21 },
+			linkedToolResultText: { codePoints: 12, utf8Bytes: 12 },
+			coverage: [
+				"assistantToolArguments",
+				"terminalAnswerText",
+				"linkedToolResultText",
+			],
+		},
 		reportedCostUsd: 0.01,
 		turns: 2,
 		toolCalls: 1,

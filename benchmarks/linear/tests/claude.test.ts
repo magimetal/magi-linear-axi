@@ -74,6 +74,13 @@ const stream = [
 	}),
 ].join("\n");
 
+function size(text: string): { codePoints: number; utf8Bytes: number } {
+	return {
+		codePoints: [...text].length,
+		utf8Bytes: Buffer.byteLength(text, "utf8"),
+	};
+}
+
 function delay(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -142,6 +149,21 @@ describe("Claude stream-json backend", () => {
 		});
 		expect(parsed.turns).toBe(2);
 		expect(parsed.durationMs).toBe(450);
+		expect(parsed.usageCoverage.outputTokens).toBe(true);
+		expect(parsed.phaseMetrics).toEqual({
+			assistantToolArguments: size(
+				`${JSON.stringify({ command: "magi-linear-axi issue view ENG-10" })}${JSON.stringify({ id: "ENG-10" })}`,
+			),
+			visibleAssistantTextBeforeTerminal: size("The issue was read."),
+			terminalAnswerText: size("Final answer."),
+			linkedToolResultText: size("ENG-10 Improve query latency"),
+			coverage: [
+				"assistantToolArguments",
+				"visibleAssistantTextBeforeTerminal",
+				"terminalAnswerText",
+				"linkedToolResultText",
+			],
+		});
 	});
 
 	it("preserves long final answers and provider-reported output tokens exactly", () => {
@@ -154,6 +176,96 @@ describe("Claude stream-json backend", () => {
 		}));
 		expect(parsed.finalAnswer).toBe(longAnswer);
 		expect(parsed.usage.outputTokens).toBe(9_876);
+	});
+
+	it("deduplicates split terminal text blocks and records measured zero preterminal text", () => {
+		const terminal = "Final answer.";
+		const parsed = parseClaudeStream([
+			JSON.stringify({
+				type: "assistant",
+				message: {
+					content: [
+						{ type: "text", text: "Final " },
+						{ type: "text", text: "answer." },
+					],
+				},
+			}),
+			JSON.stringify({ type: "result", subtype: "success", result: terminal }),
+		].join("\n"));
+		expect(parsed.phaseMetrics.visibleAssistantTextBeforeTerminal).toEqual(size(""));
+		expect(parsed.phaseMetrics.terminalAnswerText).toEqual(size(terminal));
+		expect(parsed.phaseMetrics.coverage).toEqual([
+			"visibleAssistantTextBeforeTerminal",
+			"terminalAnswerText",
+		]);
+	});
+
+	it("measures Unicode phases, exposed thinking, and missing usage without zero-filling", () => {
+		const raw = [
+			JSON.stringify({
+				type: "assistant",
+				message: {
+					content: [
+						{ type: "thinking", thinking: "理由🙂" },
+						{ type: "text", text: "Checking α." },
+					],
+				},
+			}),
+			JSON.stringify({
+				type: "stream_event",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "thinking_delta", thinking: "理由🙂" },
+				},
+			}),
+			JSON.stringify({
+				type: "result",
+				subtype: "success",
+				result: "答🙂",
+			}),
+		].join("\n");
+		const parsed = parseClaudeStream(raw);
+		expect(parsed.usageCoverage).toEqual({ outputTokens: false });
+		expect(parsed.usage.outputTokens).toBe(0);
+		expect(parsed.phaseMetrics.thinkingReasoning).toEqual(size("理由🙂"));
+		expect(parsed.phaseMetrics.visibleAssistantTextBeforeTerminal).toEqual(
+			size("Checking α."),
+		);
+		expect(parsed.phaseMetrics.terminalAnswerText).toEqual(size("答🙂"));
+		expect(parsed.phaseMetrics.thinkingReasoning?.codePoints).toBe(3);
+		expect(parsed.phaseMetrics.thinkingReasoning?.utf8Bytes).toBe(10);
+	});
+
+	it("keeps malformed, partial, and redacted-thinking phases uncovered", () => {
+		const parsed = parseClaudeStream([
+			"not-json",
+			JSON.stringify({
+				type: "assistant",
+				message: { content: [{ type: "redacted_thinking", data: "opaque" }] },
+			}),
+			JSON.stringify({
+				type: "stream_event",
+				event: {
+					type: "content_block_start",
+					index: 0,
+					content_block: { type: "tool_use", id: "partial", name: "Bash", input: {} },
+				},
+			}),
+			JSON.stringify({
+				type: "stream_event",
+				event: {
+					type: "content_block_delta",
+					index: 0,
+					delta: { type: "input_json_delta", partial_json: '{"command":"partial' },
+				},
+			}),
+			JSON.stringify({ type: "result", subtype: "success", result: "answer" }),
+		].join("\n"));
+		expect(parsed.parseErrors).toBe(2);
+		expect(parsed.phaseMetrics.coverage).toEqual([]);
+		expect(parsed.phaseMetrics).not.toHaveProperty("assistantToolArguments");
+		expect(parsed.phaseMetrics).not.toHaveProperty("terminalAnswerText");
+		expect(parsed.phaseMetrics).not.toHaveProperty("thinkingReasoning");
 	});
 
 	it("requires exactly one terminal success result event", () => {
@@ -184,9 +296,27 @@ describe("Claude stream-json backend", () => {
 			].join("\n"),
 		);
 		expect(duplicateTerminal.terminalStatus).toBe("non_success");
+		expect(duplicateTerminal.phaseMetrics.coverage).toEqual([]);
 		expect(duplicateTerminal.errors).toContain(
 			"Claude Code emitted multiple result events",
 		);
+	});
+
+	it("leaves structurally malformed JSON events uncovered", () => {
+		for (const malformed of [
+			JSON.stringify("primitive"),
+			JSON.stringify({
+				type: "assistant",
+				message: { content: [{ type: "text", text: 123 }] },
+			}),
+		]) {
+			const parsed = parseClaudeStream([
+				malformed,
+				JSON.stringify({ type: "result", subtype: "success", result: "answer" }),
+			].join("\n"));
+			expect(parsed.parseErrors).toBe(1);
+			expect(parsed.phaseMetrics.coverage).toEqual([]);
+		}
 	});
 
 	it("merges a content-block start and input deltas into the later complete tool use", () => {
@@ -245,6 +375,12 @@ describe("Claude stream-json backend", () => {
 			name: "Bash",
 			input: { command: "magi-linear-axi issue view ENG-11" },
 		});
+		expect(parsed.phaseMetrics.assistantToolArguments).toEqual(
+			size(JSON.stringify({ command: "magi-linear-axi issue view ENG-11" })),
+		);
+		expect(parsed.phaseMetrics.coverage.filter(
+			(key) => key === "assistantToolArguments",
+		)).toHaveLength(1);
 	});
 
 	it("marks unfinished streamed tool input as a parser failure", () => {
@@ -281,6 +417,7 @@ describe("Claude stream-json backend", () => {
 		expect(parsed.errors).toContain(
 			"Claude Code ended with incomplete tool input JSON",
 		);
+		expect(parsed.phaseMetrics).not.toHaveProperty("assistantToolArguments");
 	});
 
 	it("preserves malformed and non-success tool-result evidence", () => {
@@ -331,8 +468,59 @@ describe("Claude stream-json backend", () => {
 			"Claude Code emitted a malformed tool result",
 		);
 		expect(parsed.parseErrors).toBe(1);
+		expect(parsed.phaseMetrics).not.toHaveProperty("linkedToolResultText");
 	});
 
+
+	it("decodes UTF-8 correctly when a multibyte code point spans process chunks", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "linear-phase-utf8-test-"));
+		const executable = join(directory, "claude-fixture");
+		const answer = "split-🙂-answer";
+		try {
+			const event = JSON.stringify({ type: "result", subtype: "success", result: answer });
+			await writeFile(executable, `#!${process.execPath}\nconst data = Buffer.from(${JSON.stringify(`${event}\n`)}, "utf8");\nconst marker = Buffer.from("🙂", "utf8");\nconst split = data.indexOf(marker) + 1;\nprocess.stdout.write(data.subarray(0, split));\nsetTimeout(() => process.stdout.write(data.subarray(split)), 10);\n`);
+			await chmod(executable, 0o700);
+			const execution = await executeClaude({
+				condition: "judge",
+				model: "fixture",
+				prompt: "fixture",
+				claudeBin: executable,
+				cwd: directory,
+			});
+			expect(execution.parsed.finalAnswer).toBe(answer);
+			expect(execution.parsed.parseErrors).toBe(0);
+			expect(execution.parsed.phaseMetrics.terminalAnswerText).toEqual(size(answer));
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("measures raw phase sizes before redacting retained stream content", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "linear-phase-redaction-test-"));
+		const executable = join(directory, "claude-fixture");
+		const secret = "workspace-secret-🙂";
+		try {
+			await writeFile(executable, `#!${process.execPath}\nconst secret = ${JSON.stringify(secret)};\nconsole.log(JSON.stringify({type:"assistant",message:{content:[{type:"tool_use",id:"call-1",name:"Bash",input:{command:secret}}]}}));\nconsole.log(JSON.stringify({type:"result",subtype:"success",result:secret,usage:{output_tokens:7}}));\n`);
+			await chmod(executable, 0o700);
+			const execution = await executeClaude({
+				condition: "judge",
+				model: "fixture",
+				prompt: "fixture",
+				claudeBin: executable,
+				cwd: directory,
+				redactionSecrets: [secret],
+			});
+			expect(execution.stdout).not.toContain(secret);
+			expect(execution.parsed.finalAnswer).toBe("[REDACTED_LINEAR_API_KEY]");
+			expect(execution.parsed.phaseMetrics.terminalAnswerText).toEqual(size(secret));
+			expect(execution.parsed.phaseMetrics.assistantToolArguments).toEqual(
+				size(JSON.stringify({ command: secret })),
+			);
+			expect(execution.parsed.usage.outputTokens).toBe(7);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
 	it("builds isolated, restrictive condition arguments", () => {
 		const axiArgs = buildClaudeArgs({
 			condition: "axi",
