@@ -36,7 +36,42 @@ Workspace precedence: `--workspace` > non-empty `LINEAR_WORKSPACE`; workspace re
 
 ## Issues
 
-Issue argument accepts identifier such as `ENG-123`. When omitted, commands try identifier from current Git branch.
+Issue argument accepts public identifier such as `ENG-123`. `issue id ENG-123` returns that human identifier, not Linear's internal UUID. While #21 remains open, resolve internal issue UUIDs through raw GraphQL. Issue create/update support is intentionally narrower than every advertised flag:
+
+| Operation | Modeled support | Raw GraphQL required or limitation |
+| --- | --- | --- |
+| Create | `--team`, `--title`, `--description`, `--priority` | `--assignee`, `--state`, `--project`, `--label`, `--parent`, `--start`; accepted flags can be silently omitted |
+| Update | `--title`, `--description`, `--priority`, `--unassign` | `--team`, `--assignee`, `--estimate`, `--state`, `--project`, `--milestone`, `--cycle`, `--clear-cycle`; unsupported-only update is rejected as `update requires at least one field` |
+| Resolve public issue identifier | Existing issue references and `issue id` | — |
+| Resolve internal issue UUID | — | Raw GraphQL until #21 is resolved |
+
+Issue field support above is current in v0.2.1. `success:true` only proves Linear accepted mutation; it does not prove requested fields omitted from mutation response were applied. Advertised-field omissions are tracked in #5; internal UUID resolution is tracked in #21. Do not infer either issue is fixed.
+
+```sh
+# Read-only discovery for team, workflow-state, label, and parent-issue UUIDs
+magi-linear-axi team list --all --format json
+magi-linear-axi team states <team-uuid> --format json
+magi-linear-axi label list --team <team-uuid> --all --format json
+magi-linear-axi api 'query($id:String!){issue(id:$id){id identifier}}' --variable id=ENG-123 --format json
+```
+
+```sh
+# One atomic issueCreate with explicit variables and response verification fields
+magi-linear-axi api 'mutation IssueCreate($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier team{id key name} parent{id identifier} state{id name} labels{nodes{id name}}}}}' \
+  --variables-json '{"input":{"teamId":"<team-uuid>","parentId":"<parent-uuid>","stateId":"<state-uuid>","labelIds":["<label-uuid>"],"title":"Child issue","description":"Acceptance criteria"}}' \
+  --format json
+```
+
+For raw create, mandatory verification covers `id`, `identifier`, `team`, `parent`, `state`, and `labels`; never treat `success:true` alone as proof. Return every intended postcondition or immediately read back any omitted field. Default `issue view` cannot verify `parent` or `labels` because it does not select them, so use raw GraphQL for those read-backs.
+
+For sibling batches:
+
+1. Create one child.
+2. Verify its team, parent, state, and labels.
+3. Only then create remaining siblings.
+4. Query parent `children`, count expected children, and verify dependency relations with `issue relation list`.
+
+When issue argument is omitted, commands try public identifier from current Git branch.
 
 ```sh
 # Discover and inspect with compact projections
@@ -54,9 +89,11 @@ magi-linear-axi issue create --team <team-id> --title 'Fix authentication' --des
 magi-linear-axi issue update ENG-123 --title 'Revised title' --description 'Revised description' --priority 1
 magi-linear-axi issue update ENG-123 --unassign
 magi-linear-axi issue delete ENG-123
+```
 
 Delete safety: inspect target first and retain identifier, team, and exact title; run one delete mutation; then use a narrowly scoped `issue query --team <KEY> --search='<retained title>'` exclusion check. `success:true` means provider accepted request. Never retry delete after success or ambiguous transport failure. Query exclusion is eventual-consistency evidence, not transactional proof; absence from an unfiltered first page is not definitive. Direct reads may be stale, null, or HTTP error, and provider-controlled tombstone behavior cannot be guaranteed by local tests. Read retries: statuses 500/502/503/504 and no-status transient transport failures, at most 3 attempts with 50ms then 100ms backoff. Mutations, uploads, raw API calls (including `--paginate`), and HTTP-200 GraphQL errors do not retry. HTTP error detail is sanitized and previewed to first 512 bytes with `[truncated]` marker.
 
+```sh
 # Comments
 magi-linear-axi issue comment list ENG-123 --fields compact --limit 20
 magi-linear-axi issue comment add ENG-123 --body 'Investigation complete.'

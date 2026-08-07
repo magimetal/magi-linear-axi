@@ -833,3 +833,135 @@ fn unsupported_field_selections_fail_before_auth_or_network() {
         assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
 }
+
+#[test]
+fn issue_mutation_variables_and_documentation_contract_stay_aligned() {
+    let mock = Mock::start(vec![
+        r#"{"data":{"issueCreate":{"success":true,"issue":{"id":"internal-1","identifier":"ENG-1"}}}}"#.into(),
+        r#"{"data":{"issueUpdate":{"success":true,"issue":{"identifier":"ENG-1","title":"Updated"}}}}"#.into(),
+        r#"{"data":{"issue":{"id":"parent-uuid","identifier":"ENG-123"}}}"#.into(),
+        r#"{"data":{"issueCreate":{"success":true,"issue":{"id":"child-uuid","identifier":"ENG-124","team":{"id":"team-uuid","key":"ENG","name":"Engineering"},"parent":{"id":"parent-uuid","identifier":"ENG-123"},"state":{"id":"state-uuid","name":"Todo"},"labels":{"nodes":[{"id":"label-uuid","name":"bug"}]}}}}}"#.into(),
+    ]);
+    let create = run_json(
+        &mock,
+        &[
+            "issue",
+            "create",
+            "--team",
+            "team-1",
+            "--title",
+            "Created",
+            "--description",
+            "Body",
+            "--priority",
+            "2",
+            "--assignee",
+            "user-1",
+            "--state",
+            "state-1",
+            "--parent",
+            "parent-1",
+            "--label",
+            "label-1",
+            "--project",
+            "project-1",
+            "--start",
+        ],
+    );
+    assert!(create.status.success());
+    let update = run_json(
+        &mock,
+        &[
+            "issue",
+            "update",
+            "ENG-1",
+            "--title",
+            "Updated",
+            "--state",
+            "state-1",
+            "--project",
+            "project-1",
+            "--team",
+            "team-2",
+            "--assignee",
+            "user-2",
+            "--estimate",
+            "3",
+            "--milestone",
+            "milestone-1",
+            "--cycle",
+            "cycle-1",
+            "--clear-cycle",
+        ],
+    );
+    assert!(update.status.success());
+    let requests = mock.requests();
+    let create_request = graphql_request(&requests[0]);
+    assert_eq!(
+        create_request["variables"],
+        json!({"input":{"title":"Created","description":"Body","teamId":"team-1","priority":2}})
+    );
+    let update_request = graphql_request(&requests[1]);
+    assert_eq!(
+        update_request["variables"],
+        json!({"id":"ENG-1","input":{"title":"Updated"}})
+    );
+    let id_query = "query($id:String!){issue(id:$id){id identifier}}";
+    let id_output = run_json(&mock, &["api", id_query, "--variable", "id=ENG-123"]);
+    assert!(id_output.status.success());
+    let create_query = "mutation IssueCreate($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier team{id key name} parent{id identifier} state{id name} labels{nodes{id name}}}}}";
+    let create_variables = r#"{"input":{"teamId":"team-uuid","parentId":"parent-uuid","stateId":"state-uuid","labelIds":["label-uuid"],"title":"Child issue","description":"Acceptance criteria"}}"#;
+    let raw_create = run_json(
+        &mock,
+        &["api", create_query, "--variables-json", create_variables],
+    );
+    assert!(raw_create.status.success());
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    let id_request = graphql_request(&requests[2]);
+    assert_eq!(id_request["query"], id_query);
+    assert_eq!(id_request["variables"], json!({"id":"ENG-123"}));
+    let raw_create_request = graphql_request(&requests[3]);
+    assert_eq!(raw_create_request["query"], create_query);
+    assert_eq!(
+        raw_create_request["variables"],
+        serde_json::from_str::<Value>(create_variables).unwrap()
+    );
+    let unsupported_update = run_json(
+        &mock,
+        &[
+            "issue",
+            "update",
+            "ENG-1",
+            "--state",
+            "state-1",
+            "--project",
+            "project-1",
+        ],
+    );
+    assert_eq!(unsupported_update.status.code(), Some(2));
+    assert_eq!(mock.requests().len(), 4);
+    let skill = include_str!("../skills/magi-linear-axi/SKILL.md");
+    let readme = include_str!("../README.md");
+    for docs in [skill, readme] {
+        assert!(docs.contains("silently omitted"));
+        assert!(docs.contains("unsupported-only update"));
+        assert!(docs.contains("success:true"));
+        assert!(docs.contains("mandatory"));
+        assert!(docs.contains("parent"));
+        assert!(docs.contains("label"));
+        assert!(docs.contains("--variables-json"));
+        assert!(
+            docs.contains("`--assignee`, `--state`, `--project`, `--label`, `--parent`, `--start`")
+        );
+        assert!(docs.contains("`--team`, `--assignee`, `--estimate`, `--state`, `--project`, `--milestone`, `--cycle`, `--clear-cycle`"));
+        assert!(docs.contains("issue(id:$id){id identifier}"));
+        assert!(docs.contains(
+            "team{id key name} parent{id identifier} state{id name} labels{nodes{id name}}"
+        ));
+        assert!(docs.contains("\"teamId\":\"<team-uuid>\",\"parentId\":\"<parent-uuid>\",\"stateId\":\"<state-uuid>\",\"labelIds\":[\"<label-uuid>\"]"));
+        assert!(docs.contains("Default `issue view` cannot verify `parent` or `labels`"));
+        assert!(docs.contains("count expected children"));
+    }
+    mock.thread.join().unwrap();
+}

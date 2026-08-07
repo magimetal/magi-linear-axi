@@ -51,21 +51,17 @@ export LINEAR_API_KEY='lin_api_...'
 magi-linear-axi auth whoami
 ```
 
-Find team IDs, inspect issues, then create or update one:
+Find team IDs, inspect issues, then create or update one. v0.2.1 modeled issue mutations support only fields listed below; accepted unsupported create flags can be silently omitted, and unsupported-only update fails before network. #21 remains open.
 
 ```sh
 magi-linear-axi team list
-magi-linear-axi issue list --team ENG --limit 25
-magi-linear-axi issue view ENG-123 --full
-
-magi-linear-axi issue create \
-  --team <team-id> \
-  --title 'Fix authentication timeout' \
-  --description 'Observed behavior and acceptance criteria' \
-  --priority 2
-
+magi-linear-axi issue list --team ENG --limit 25 --fields compact
+magi-linear-axi issue view ENG-123 --fields compact
+magi-linear-axi issue create --team <team-id> --title 'Fix authentication timeout' --description 'Observed behavior and acceptance criteria' --priority 2
 magi-linear-axi issue update ENG-123 --title 'Fix login timeout' --priority 1
 ```
+
+Use raw GraphQL for unsupported issue fields, internal UUID discovery, and verification. `issue id ENG-123` returns human identifier `ENG-123`, not internal UUID.
 
 Use raw GraphQL when modeled commands do not cover an operation:
 
@@ -160,7 +156,41 @@ Remote endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts 
 
 ### Issues
 
-Issue references accept identifiers such as `ENG-123`. When omitted, relevant commands try to extract an identifier from current Git branch.
+Issue references use public identifiers such as `ENG-123`. `issue id ENG-123` echoes that public identifier; while #21 remains open, use raw GraphQL to resolve internal issue UUIDs required by `parentId`. Discover every mutation UUID with read-only calls:
+
+```sh
+magi-linear-axi issue list --team ENG --limit 10 --fields compact
+magi-linear-axi issue query --team ENG --search='authentication' --limit 10 --fields compact
+magi-linear-axi issue view ENG-123 --fields compact
+
+# Team, workflow-state, label, and parent-issue UUIDs
+magi-linear-axi team list --all --format json
+magi-linear-axi team states <team-uuid> --format json
+magi-linear-axi label list --team <team-uuid> --all --format json
+magi-linear-axi api 'query($id:String!){issue(id:$id){id identifier}}' --variable id=ENG-123 --format json
+```
+
+v0.2.1 modeled mutation matrix:
+
+| Operation | Modeled support | Raw GraphQL required or limitation |
+| --- | --- | --- |
+| Create | `--team`, `--title`, `--description`, `--priority` | `--assignee`, `--state`, `--project`, `--label`, `--parent`, `--start`; accepted flags can be omitted |
+| Update | `--title`, `--description`, `--priority`, `--unassign` | `--team`, `--assignee`, `--estimate`, `--state`, `--project`, `--milestone`, `--cycle`, `--clear-cycle`; unsupported-only update is rejected |
+| Resolve public issue identifier | Existing issue references and `issue id` | — |
+| Resolve internal issue UUID | — | Raw GraphQL until #21 is resolved |
+
+Create flags in raw-GraphQL column may be silently omitted by modeled command. Unsupported-only update returns `update requires at least one field`. `success:true` only proves Linear accepted mutation; it does not prove requested fields omitted from mutation response were applied. Advertised-field omissions are tracked in #5; internal UUID resolution is tracked in #21.
+
+Default `issue view` cannot verify `parent` or `labels` because it does not select them; use raw GraphQL for those fields.
+
+```sh
+# Atomic raw issueCreate; inspect success and returned id/identifier/team/parent/state/labels
+magi-linear-axi api 'mutation IssueCreate($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier team{id key name} parent{id identifier} state{id name} labels{nodes{id name}}}}}' \
+  --variables-json '{"input":{"teamId":"<team-uuid>","parentId":"<parent-uuid>","stateId":"<state-uuid>","labelIds":["<label-uuid>"],"title":"Child issue","description":"Acceptance criteria"}}' \
+  --format json
+```
+
+`success:true` is not sufficient verification. Return every intended postcondition or immediately read back any omitted field; verification is mandatory. For multiple siblings: create one, verify its team/parent/state/labels, then create remaining siblings. Finally query parent `children`, count expected children, and verify dependency relations with `issue relation list`.
 
 | Job | Commands |
 | --- | --- |
@@ -206,7 +236,7 @@ Compact projections are opt-in: `--fields compact` is supported by issue view, i
 
 Representative mocked issue-view regression fixture reduces GraphQL selection from 148 to 87 bytes and rendered JSON from 287 to 134 bytes. These fixed measurements guard payload/output impact before benchmark use.
 
-`--assignee`, `--project`, and `--milestone` filters expect Linear IDs; `--team` accepts team key. Repeat `--state` or `--label` to match multiple values. `issue create` currently sends title, description, team ID, and priority. `issue update` currently sends title, description, priority, and `--unassign`; use raw GraphQL for other issue fields.
+`--assignee`, `--project`, and `--milestone` filters expect Linear IDs; `--team` accepts team key. Repeat `--state` or `--label` to match multiple values. `issue create` and `issue update` send only fields in matrix above; use raw GraphQL for other issue fields.
 
 Relation deletion currently requires issue, relation type, and relation ID arguments, but Linear deletion uses only relation ID. Run `issue relation list` first, copy exact relation ID, and do not assume first two arguments protect against deleting wrong relation.
 
