@@ -116,7 +116,7 @@ Structured application errors contain stable fields. Operational failures use ex
 {"error":{"type":"usage","code":2,"message":"what input must be corrected"}}
 ```
 
-Current single-document exceptions: `issue id` and `team id` emit plain identifiers; generated shell completions, help, and version emit plain text; `issue pull-request` passes through `gh` JSON before rendering its Linear result. Parser-level failures occur before output-format resolution and are emitted as structured TOON even when `--format json` was supplied. Do not send these exceptional outputs directly to a strict JSON parser.
+Current single-document exceptions: `issue identifier` and `team id` emit plain identifiers; generated shell completions, help, and version emit plain text; `issue pull-request` passes through `gh` JSON before rendering its Linear result. `issue id` resolves a human identifier to structured internal Linear UUID data. Parser-level failures occur before output-format resolution and are emitted as structured TOON even when `--format json` was supplied. Do not send these exceptional outputs directly to a strict JSON parser.
 
 ## Authentication and configuration
 
@@ -160,12 +160,12 @@ Remote endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts 
 
 ### Issues
 
-Issue references accept identifiers such as `ENG-123`. When omitted, relevant commands try to extract an identifier from current Git branch.
+Issue references are human identifiers such as `ENG-123`, not internal Linear UUIDs. When omitted, relevant commands try to extract an identifier from current Git branch. `issue id` performs one read-only lookup and returns both UUID (`id`) and human identifier (`identifier`); `issue identifier` is local-only compatibility output.
 
 | Job | Commands |
 | --- | --- |
 | Discover | `issue mine`, `issue list`, `issue query` |
-| Inspect | `issue view`, `title`, `describe`, `url`, `id` |
+| Inspect | `issue view`, `title`, `describe`, `url`, `id`, `identifier` |
 | Mutate | `issue create`, `update`, `start`, `delete` |
 | Comments | `issue comment list \| add \| update \| delete` |
 | Attachments and links | `issue attach`, `issue link` |
@@ -179,7 +179,17 @@ magi-linear-axi issue mine --state 'In Progress'
 magi-linear-axi issue query --team ENG --search 'authentication' --label bug
 magi-linear-axi issue query --assignee <user-id> --project <project-id>
 magi-linear-axi issue view ENG-123
+```
 
+```sh
+# Resolve human identifier to internal UUID for nested raw mutations
+magi-linear-axi --format json issue id ENG-123
+magi-linear-axi api 'mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier}}}' --variable input='{"title":"Child","teamId":"<team-id>","parentId":"<uuid-from-issue-id>"}'
+```
+
+`issue id` accepts human identifier input and emits structured `{ "issue": { "id": "<uuid>", "identifier": "ENG-123" } }`. Omitted input derives from current Git branch. `issue identifier` keeps old local normalized plain-output behavior and never contacts Linear or requires authentication.
+
+```sh
 # Opt-in compact reads
 magi-linear-axi issue query --team ENG --fields compact
 magi-linear-axi issue view ENG-123 --fields compact

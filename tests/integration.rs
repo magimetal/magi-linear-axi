@@ -151,6 +151,14 @@ fn graphql_request(request: &str) -> Value {
     let (_, body) = request.split_once("\r\n\r\n").expect("HTTP request body");
     serde_json::from_str(body).expect("GraphQL JSON request")
 }
+fn authorization_header(request: &str) -> Option<&str> {
+    let (headers, _) = request.split_once("\r\n\r\n").expect("HTTP request body");
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("authorization")
+            .then(|| value.trim())
+    })
+}
 
 #[test]
 fn api_sends_auth_graphql_variables_and_paginates() {
@@ -367,8 +375,9 @@ fn run_json_with_token(mock: &Mock, args: &[&str], token: &str) -> std::process:
 fn run_json_request(response: &str, args: &[&str]) -> (std::process::Output, Value) {
     let mock = Mock::start(vec![response.into()]);
     let output = run_json(&mock, args);
-    let request = graphql_request(&mock.requests().pop().expect("GraphQL request"));
-    mock.thread.join().unwrap();
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 1);
+    let request = graphql_request(&requests[0]);
     (output, request)
 }
 
@@ -831,5 +840,150 @@ fn unsupported_field_selections_fail_before_auth_or_network() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+}
+
+#[test]
+fn issue_id_resolves_uuid_with_exact_read_query_variables_auth_and_json_shape() {
+    let mock = Mock::start(vec![
+        r#"{"data":{"issue":{"id":"uuid-123","identifier":"ENG-123"}}}"#.into(),
+    ]);
+    let output = run_json(&mock, &["issue", "id", "eng-123"]);
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!({"issue":{"id":"uuid-123","identifier":"ENG-123"}})
+    );
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    let body = graphql_request(request);
+    assert_eq!(authorization_header(request), Some("lin_api_test"));
+    assert_eq!(
+        body["query"],
+        "query IssueId($identifier:String!){issue(id:$identifier){id identifier}}"
+    );
+    assert_eq!(body["variables"], json!({"identifier":"ENG-123"}));
+}
+
+#[test]
+fn issue_id_default_toon_and_not_found_are_structured() {
+    let mock = Mock::start(vec![
+        r#"{"data":{"issue":{"id":"uuid-123","identifier":"ENG-123"}}}"#.into(),
+    ]);
+    let output = Command::cargo_bin("magi-linear-axi")
+        .unwrap()
+        .args(["--endpoint", &mock.endpoint, "issue", "id", "ENG-123"])
+        .env("LINEAR_API_KEY", "lin_api_test")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "issue:\n  id: \"uuid-123\"\n  identifier: \"ENG-123\"\n"
+    );
+    assert_eq!(mock.finish().len(), 1);
+    let mock = Mock::start(vec![r#"{"data":{"issue":null}}"#.into()]);
+    let output = run_json(&mock, &["issue", "id", "ENG-404"]);
+    assert_eq!(output.status.code(), Some(1));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["type"], "api");
+    assert_eq!(value["error"]["code"], 1);
+    assert_eq!(value["error"]["message"], "issue ENG-404 not found");
+    assert_eq!(mock.finish().len(), 1);
+}
+
+#[test]
+fn issue_identifier_is_local_and_branch_fallback_works_without_auth() {
+    let output = Command::cargo_bin("magi-linear-axi")
+        .unwrap()
+        .args(["issue", "identifier", "eng-123"])
+        .env_remove("LINEAR_API_KEY")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ENG-123");
+}
+
+#[test]
+fn issue_id_uses_git_branch_identifier_and_returns_uuid() {
+    let repo = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["checkout", "-q", "-b", "feature/eng-456"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap();
+    let mock = Mock::start(vec![
+        r#"{"data":{"issue":{"id":"uuid-456","identifier":"ENG-456"}}}"#.into(),
+    ]);
+    let output = Command::cargo_bin("magi-linear-axi")
+        .unwrap()
+        .args([
+            "--format",
+            "json",
+            "--endpoint",
+            &mock.endpoint,
+            "issue",
+            "id",
+        ])
+        .current_dir(repo.path())
+        .env("LINEAR_API_KEY", "lin_api_test")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!({"issue":{"id":"uuid-456","identifier":"ENG-456"}})
+    );
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        graphql_request(&requests[0])["variables"],
+        json!({"identifier":"ENG-456"})
+    );
+}
+
+#[test]
+fn issue_help_describes_id_and_identifier_contracts() {
+    for (args, expected) in [
+        (
+            &["issue", "id", "--help"][..],
+            &[
+                "internal Linear UUID",
+                "human issue identifier",
+                "Git branch fallback",
+            ][..],
+        ),
+        (
+            &["issue", "identifier", "--help"][..],
+            &["human issue identifier", "no network access"][..],
+        ),
+        (
+            &["issue", "--help"][..],
+            &[
+                "internal Linear UUID",
+                "human issue identifier",
+                "no network access",
+            ][..],
+        ),
+    ] {
+        let output = Command::cargo_bin("magi-linear-axi")
+            .unwrap()
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        for fragment in expected {
+            assert!(
+                text.contains(&fragment.to_lowercase()),
+                "missing {fragment}"
+            );
+        }
     }
 }

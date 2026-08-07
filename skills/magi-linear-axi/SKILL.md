@@ -36,7 +36,7 @@ Workspace precedence: `--workspace` > non-empty `LINEAR_WORKSPACE`; workspace re
 
 ## Issues
 
-Issue argument accepts identifier such as `ENG-123`. When omitted, commands try identifier from current Git branch.
+Issue references are human identifiers such as `ENG-123`, not internal Linear UUIDs. When omitted, commands try identifier from current Git branch. `issue id` resolves one identifier with one read-only query and returns internal UUID plus identifier. `issue identifier` preserves local normalized plain output and needs no network or auth.
 
 ```sh
 # Discover and inspect with compact projections
@@ -48,6 +48,11 @@ magi-linear-axi issue title ENG-123
 magi-linear-axi issue describe ENG-123
 magi-linear-axi issue url ENG-123
 magi-linear-axi issue id ENG-123
+magi-linear-axi issue identifier ENG-123
+
+# Resolve UUID for nested raw GraphQL mutations
+magi-linear-axi --format json issue id ENG-123
+magi-linear-axi api 'mutation($input:IssueCreateInput!){issueCreate(input:$input){success issue{id identifier}}}' --variable input='{"title":"Child","teamId":"<team-id>","parentId":"<uuid-from-issue-id>"}'
 
 # Create, update, and delete
 magi-linear-axi issue create --team <team-id> --title 'Fix authentication' --description 'Observed behavior and acceptance criteria' --priority 2
