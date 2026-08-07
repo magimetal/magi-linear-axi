@@ -1,3 +1,4 @@
+import { parseAxiArgv, axiCommandPath } from "./axi-argv.js";
 import { assertQueryOnly, GraphqlSafetyError } from "./graphql.js";
 import { commandInput, parseShellCommand } from "./operations.js";
 import type {
@@ -124,10 +125,6 @@ const AXI_WRITE_OPERATIONS = new Set([
 	"u",
 	"d",
 ]);
-const AXI_READ_OPERATIONS = new Map<string, Set<string>>([
-	["issue", new Set(["query", "view"])],
-	["project", new Set(["view"])],
-]);
 type AuditFinding = {
 	severity: "safety" | "policy";
 	source: SafetyViolation["source"];
@@ -184,27 +181,6 @@ function hasRawGraphqlMutation(
 	}
 }
 
-function commandPath(tokens: readonly string[]): string[] {
-	const path: string[] = [];
-	const valueFlags = new Set([
-		"--workspace",
-		"--endpoint",
-		"--format",
-		"--output",
-	]);
-	for (let index = 1; index < tokens.length && path.length < 4; index += 1) {
-		const token = tokens[index].toLowerCase();
-		if (token.startsWith("--")) {
-			if (valueFlags.has(token)) {
-				index += 1;
-			}
-			continue;
-		}
-		path.push(token);
-	}
-	return path;
-}
-
 function axiPathViolation(
 	firstSegment: readonly string[],
 	resolvedAxiBin: string,
@@ -223,9 +199,7 @@ function axiOperationFinding(
 	if (
 		firstSegment.some((token) => {
 			const normalized = token.toLowerCase();
-			return (
-				normalized === "--endpoint" || normalized.startsWith("--endpoint=")
-			);
+			return normalized.startsWith("--endpoint");
 		})
 	) {
 		return {
@@ -237,16 +211,38 @@ function axiOperationFinding(
 		};
 	}
 	if (firstSegment.length === 1) {
+		return {
+			severity: "policy",
+			source,
+			operation: "unrecognized AXI operation",
+			message: "the AXI operation was not a recognized bounded read",
+		};
+	}
+	const parsed = parseAxiArgv(firstSegment.slice(1));
+	if (parsed.ok && (parsed.help || parsed.version || parsed.operation !== undefined)) {
 		return undefined;
 	}
-	if (firstSegment.includes("--help") || firstSegment.includes("--version")) {
-		return undefined;
+	if (
+		!parsed.ok &&
+		firstSegment.some((token) => token === "--help" || token === "-h" || token === "--version" || token === "-V")
+	) {
+		return {
+			severity: "policy",
+			source,
+			operation: "unrecognized AXI operation",
+			message: "the AXI operation was not a recognized bounded read",
+		};
 	}
-	const path = commandPath(firstSegment);
+	const path = axiCommandPath(firstSegment);
 	const family = path[0];
 	const operation = path[1];
 	if (!family || family === "help" || family === "version") {
-		return undefined;
+		return {
+			severity: "policy",
+			source,
+			operation: "unrecognized AXI operation",
+			message: "the AXI operation was not a recognized bounded read",
+		};
 	}
 	if (family === "setup" || family === "config") {
 		return {
@@ -258,7 +254,12 @@ function axiOperationFinding(
 	}
 	if (family === "auth") {
 		return operation === "whoami"
-			? undefined
+			? {
+					severity: "policy",
+					source,
+					operation: "unrecognized AXI operation",
+					message: "the AXI operation was not a recognized bounded read",
+				}
 			: {
 					severity: "safety",
 					source,
@@ -286,14 +287,12 @@ function axiOperationFinding(
 				message: "raw GraphQL mutations are forbidden",
 			};
 		}
-		return firstSegment.length > 2
-			? undefined
-			: {
-					severity: "policy",
-					source,
-					operation: "unrecognized raw AXI API operation",
-					message: "the AXI API command was not a recognized bounded read",
-				};
+		return {
+			severity: "policy",
+			source,
+			operation: "unrecognized raw AXI API operation",
+			message: "the AXI API command was not a recognized bounded read",
+		};
 	}
 	if (AXI_WRITE_OPERATIONS.has(operation ?? "")) {
 		return {
@@ -313,18 +312,12 @@ function axiOperationFinding(
 				message: "AXI comment/relation writes are forbidden",
 			};
 		}
-		return nested === "list"
-			? undefined
-			: {
-					severity: "policy",
-					source,
-					operation: "unrecognized AXI operation",
-					message: "the AXI operation was not a recognized bounded read",
-				};
-	}
-	const reads = AXI_READ_OPERATIONS.get(family);
-	if (reads?.has(operation ?? "")) {
-		return undefined;
+		return {
+			severity: "policy",
+			source,
+			operation: "unrecognized AXI operation",
+			message: "the AXI operation was not a recognized bounded read",
+		};
 	}
 	return {
 		severity: "policy",

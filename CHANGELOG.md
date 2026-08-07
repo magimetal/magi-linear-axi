@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and thi
 
 ## [Unreleased]
 
+### Fixed
+
+- Align the AXI benchmark condition with v0.2.0 compact projections: guidance uses the compact issue/query/comment/relation/project forms, the broker rejects legacy or malformed selectors, and safety/operation grading recognizes only the bounded compact reads.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added

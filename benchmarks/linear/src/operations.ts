@@ -1,3 +1,4 @@
+import { parseAxiArgv } from "./axi-argv.js";
 import type {
 	BenchmarkOperationKind,
 	Condition,
@@ -49,9 +50,13 @@ export function parseShellCommand(command: string): ShellParse {
 		if (quote === "double") {
 			if (character === '"') {
 				quote = undefined;
-			} else if (character === "\\") {
+				continue;
+			}
+			if (character === "\\") {
 				escaped = true;
-			} else if (
+				continue;
+			}
+			if (
 				character === "$" &&
 				(command[index + 1] === "(" ||
 					/[A-Za-z_{]/u.test(command[index + 1] ?? ""))
@@ -131,79 +136,6 @@ function identifierTokens(value: string): string[] {
 		.filter(Boolean);
 }
 
-function validAxiValue(value: string | undefined): boolean {
-	return value !== undefined && value.length > 0 && !value.startsWith("-");
-}
-
-interface NormalizedAxiArgs {
-	core: string[];
-	help: boolean;
-	version: boolean;
-}
-
-/**
- * Removes only the broker's non-operation global flags. Returning undefined
- * means that the argv is not a broker-approved shape for operation grading.
- */
-function normalizeAxiArgs(args: readonly string[]): NormalizedAxiArgs | undefined {
-	const core: string[] = [];
-	let help = false;
-	let version = false;
-	for (let index = 0; index < args.length; index += 1) {
-		const argument = args[index];
-		if (!argument || argument === "--") {
-			return undefined;
-		}
-		if (argument === "--help" || argument === "-h") {
-			if (help) return undefined;
-			help = true;
-			continue;
-		}
-		if (argument === "--version" || argument === "-V") {
-			if (version) return undefined;
-			version = true;
-			continue;
-		}
-		if (argument === "--full") {
-			continue;
-		}
-		if (argument === "--format" || argument === "--workspace") {
-			const value = args[index + 1];
-			if (!validAxiValue(value)) return undefined;
-			if (argument === "--format" && value !== "toon" && value !== "json") {
-				return undefined;
-			}
-			index += 1;
-			continue;
-		}
-		if (argument.startsWith("--format=") || argument.startsWith("--workspace=")) {
-			const separator = argument.indexOf("=");
-			const flag = argument.slice(0, separator);
-			const value = argument.slice(separator + 1);
-			if (!validAxiValue(value)) return undefined;
-			if (flag === "--format" && value !== "toon" && value !== "json") {
-				return undefined;
-			}
-			continue;
-		}
-		if (
-			argument === "--search" ||
-			argument.startsWith("--search=") ||
-			argument === "--limit" ||
-			argument.startsWith("--limit=")
-		) {
-			core.push(argument);
-			continue;
-		}
-		if (argument.startsWith("--")) {
-			return undefined;
-		}
-		core.push(argument);
-	}
-	if (version && (help || core.length > 0)) return undefined;
-	return { core, help, version };
-}
-
 function axiExecutableMatches(command: string, expected: string): boolean {
 	if (command === expected) return true;
 	// Unit callers often use the default executable name while live runs pass
@@ -234,51 +166,19 @@ function classifyAxiCall(
 	if (!executable || !axiExecutableMatches(executable, resolvedAxiBin)) {
 		return classifiedOther();
 	}
-	const normalized = normalizeAxiArgs(tokens.slice(1));
-	if (!normalized) return classifiedOther();
-	if (normalized.help || normalized.version) {
-		return { kind: "help" };
+	const normalized = parseAxiArgv(tokens.slice(1));
+	if (!normalized.ok) return classifiedOther();
+	if (normalized.help || normalized.version) return { kind: "help" };
+	const operation = normalized.operation;
+	if (operation?.kind === "issue_query") {
+		const search = operation.search.trim();
+		return search.length > 0
+			? { kind: "issue_search", operand: search, searchText: search }
+			: classifiedOther();
 	}
-	const { core } = normalized;
-	if (core[0] === "issue" && core[1] === "query") {
-		let search: string | undefined;
-		for (let index = 2; index < core.length; index += 1) {
-			const argument = core[index];
-			if (argument?.startsWith("--search=") && search === undefined) {
-				const value = argument.slice("--search=".length);
-				if (!value) return classifiedOther();
-				search = value.trim();
-				continue;
-			}
-			if (argument === "--limit") {
-				const value = core[index + 1];
-				if (!/^\d{1,3}$/u.test(value ?? "") || Number(value) < 1 || Number(value) > 100) {
-					return classifiedOther();
-				}
-				index += 1;
-				continue;
-			}
-			if (argument?.startsWith("--limit=")) {
-				const value = argument.slice("--limit=".length);
-				if (!/^\d{1,3}$/u.test(value) || Number(value) < 1 || Number(value) > 100) {
-					return classifiedOther();
-				}
-				continue;
-			}
-			return classifiedOther();
-		}
-		return search === undefined
-			? classifiedOther()
-			: { kind: "issue_search", operand: search, searchText: search };
-	}
-	if (
-		core[0] === "issue" &&
-		core[1] === "view" &&
-		core.length === 3 &&
-		validAxiValue(core[2])
-	) {
-		const issueIdentifier = core[2]?.trim();
-		return issueIdentifier
+	if (operation?.kind === "issue_view") {
+		const issueIdentifier = operation.identifier.trim();
+		return issueIdentifier.length > 0
 			? { kind: "issue_view", operand: issueIdentifier, issueIdentifier }
 			: classifiedOther();
 	}
