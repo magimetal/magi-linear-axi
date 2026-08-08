@@ -10,7 +10,7 @@ Agent-native Rust CLI for direct, non-interactive Linear GraphQL operations. Mod
 | --- | --- |
 | Agent can execute shell commands and needs explicit, auditable argv | Client is MCP-native and managed MCP setup matters more |
 | Compact TOON, stable exit codes, bounded reads, raw GraphQL, and schema export | Official integration and lower measured latency matter more |
-| Published cohort used 38.9% fewer reported tokens and cost 17.0% less | Official MCP was 14.2% faster in same cohort |
+| Published cohort used 38.9% fewer reported tokens and cost 17.0% less | AXI used 14.2% more agent wall time than official MCP in same cohort |
 
 Neither interface is universally best. [Benchmark scope and caveats](docs/benchmark.md).
 
@@ -60,7 +60,9 @@ Published v0.2.1 compact read-only cohort: 8 tasks × 3 repeats per interface, o
 | Safety / policy / unexpected incidents | 0 / 0 / 0 | 0 / 0 / 0 |
 | Reported tokens | -38.9% | baseline |
 | Reported cost | -17.0% | baseline |
-| Agent wall time | +14.2% | baseline |
+| Agent wall time (MCP mean = 100) | 114.2 | 100 |
+
+Wall time is a relative index, not an absolute duration: for every 100 units of mean MCP time, AXI took 114.2, a difference of 14.2 units. For example, that ratio would mean 114.2 ms versus 100 ms (14.2 ms more), or 11.42 s versus 10 s (1.42 s more). These are illustrations, not measured durations. The published aggregate does not include the absolute mean wall times, so it cannot establish whether the practical delay was milliseconds or seconds; treat the 14.2% difference as directional only.
 
 Aggregate-only directional evidence; raw cohort artifacts are not published, so no universal-superiority or mutation-proof claim. See [results, method, and caveats](docs/benchmark.md), [harness methodology](https://github.com/magimetal/magi-linear-axi/tree/main/benchmarks/linear), and [showcase](docs/showcase.html).
 
