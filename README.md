@@ -18,12 +18,31 @@ Neither interface is universally best. [Benchmark scope and caveats](docs/benchm
 
 Requires Rust 1.87+, Cargo, network access, and a [Linear personal API key](https://linear.app/settings/api). Key stays environment-only.
 
+If Rust is not installed, install Rust and Cargo with official [rustup](https://rustup.rs/):
+
+**macOS, Linux, or WSL**
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+```
+
+Compiling may also require platform build tools: run `xcode-select --install` on macOS, or install your Linux distribution's GCC/Clang build-tools package.
+
+**Windows**
+
+Download and run [rustup-init.exe](https://win.rustup.rs/), follow its prompts, then reopen PowerShell or Command Prompt. Complete the [Visual Studio prerequisites](https://rust-lang.github.io/rustup/installation/windows-msvc.html) if prompted.
+
+Confirm `rustc --version` reports 1.87.0 or newer and `cargo --version` succeeds. Then install and configure `magi-linear-axi`:
+
 ```sh
 cargo install magi-linear-axi --locked
 export LINEAR_API_KEY='lin_api_your_key'
 magi-linear-axi auth whoami
 magi-linear-axi team list
 ```
+
+In Windows, set the key with `$env:LINEAR_API_KEY = 'lin_api_your_key'` in PowerShell or `set LINEAR_API_KEY=lin_api_your_key` in Command Prompt instead of `export`.
 
 `--format json` means compact JSON for API-backed results and post-parse application errors; parser-level failures and documented plain-text commands remain outside strict JSON. Default output is compact [TOON](https://toonformat.dev/). Strings truncate after 240 Unicode code points; `--full` disables truncation.
 
