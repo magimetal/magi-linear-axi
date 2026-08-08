@@ -1098,8 +1098,8 @@ fn issue_mutation_variables_and_documentation_contract_stay_aligned() {
     assert_eq!(unsupported_update.status.code(), Some(2));
     assert_eq!(mock.requests().len(), 4);
     let skill = include_str!("../skills/magi-linear-axi/SKILL.md");
-    let readme = include_str!("../README.md");
-    for docs in [skill, readme] {
+    let reference = include_str!("../docs/reference.md");
+    for docs in [skill, reference] {
         assert!(docs.contains("silently omitted"));
         assert!(docs.contains("unsupported-only update"));
         assert!(docs.contains("success:true"));

@@ -15,7 +15,7 @@ include = [
   "/src/**",
   "/tests/**",
   "/skills/**",
-  "/docs/release.md",
+  "/docs/**",
   "/LICENSE",
   "/THIRD_PARTY_NOTICES.md",
   "/README.md",

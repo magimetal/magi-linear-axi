@@ -1355,7 +1355,7 @@
           <p class="console-command">  <span class="flag">--fields compact</span></p>
           <p class="console-output">✓ issue.identifier  ENG-123</p>
           <p class="console-output">✓ issue.title       <span class="dim">…</span></p>
-          <p class="console-output">✓ pageInfo          <span class="dim">bounded connection</span></p>
+          <p class="console-output">✓ issue.state       <span class="dim">In Progress</span></p>
         </div>
         <div class="console-foot">
           <span><b>TOON</b> default</span>
@@ -1401,8 +1401,8 @@
         </article>
         <article class="feature-card">
           <div class="feature-index">02 / format</div>
-          <h3>TOON first, strict JSON optional</h3>
-          <p>Compact <code>TOON</code> is the default structured format. Add <code>--format json</code> for a downstream parser that requires strict, compact JSON.</p>
+          <h3>TOON first, compact JSON optional</h3>
+          <p>Compact <code>TOON</code> is default. <code>--format json</code> emits compact JSON for API-backed results and post-parse application errors; parser-level and documented text exceptions remain.</p>
         </article>
         <article class="feature-card">
           <div class="feature-index">03 / failure</div>
@@ -1758,7 +1758,7 @@ magi-linear-axi issue view ENG-123 --full</code></pre>
       <span>magi-linear-axi · direct Linear GraphQL · ISC</span>
       <div class="footer-links">
         <a href="https://github.com/magimetal/magi-linear-axi" target="_blank" rel="noopener noreferrer">GitHub repository</a>
-        <a href="https://github.com/magimetal/magi-linear-axi/pull/20" target="_blank" rel="noopener noreferrer">Benchmark / PR #20</a>
+        <a href="https://github.com/magimetal/magi-linear-axi/pull/20" target="_blank" rel="noopener noreferrer">Benchmark history</a>
         <a href="https://docs.rs/magi-linear-axi" target="_blank" rel="noopener noreferrer">docs.rs</a>
       </div>
     </div>
